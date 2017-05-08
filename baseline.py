@@ -8,7 +8,7 @@ import os
 import collections
 import zipfile
 import itertools as it
-from memoize_pickle import memoize_pickle
+from pkl_utils import memoize_pickle
 
 import numpy as np
 import pandas as pd
