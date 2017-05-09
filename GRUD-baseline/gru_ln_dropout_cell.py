@@ -99,7 +99,7 @@ class LayerNormBasicGRUCell(tf.contrib.rnn.LayerNormBasicLSTMCell):
                                                 n_outs, name)
 
     def __call__(self, inputs, state, scope=None):
-        with tf.variable_scope(self, scope or "layer_norm_basic_gru_cell"):
+        with tf.variable_scope(scope or "layer_norm_basic_gru_cell"):
             z, r = self._linear([inputs, state], self._num_units, 2, "gates_1")
             if self._layer_norm:
                 z = self._norm(z, "update")
