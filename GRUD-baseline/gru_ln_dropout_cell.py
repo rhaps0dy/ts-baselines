@@ -27,12 +27,12 @@ class LayerNormDropoutGRUDCell(tf.contrib.rnn.LayerNormBasicLSTMCell):
         else:
             args = inputs[0]
         with tf.variable_scope(name):
+            out_size = n_outs*each_out_size
             if is_diagonal:
                 assert n_outs == 1 and each_out_size == args.get_shape()[-1]
                 weights = tf.get_variable("weights", [each_out_size], dtype=tf.float32)
                 out = args * weights
             else:
-                out_size = n_outs*each_out_size
                 proj_size = args.get_shape()[-1]
                 weights = tf.get_variable("weights", [proj_size, out_size], dtype=tf.float32)
                 out = tf.matmul(args, weights)

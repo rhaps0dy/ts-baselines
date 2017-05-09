@@ -28,6 +28,7 @@ flags.DEFINE_integer('hidden_units', 100, 'Number of hidden units per LSTM layer
 flags.DEFINE_integer('hidden_layers', 1, 'Number of hidden LSTM layers')
 flags.DEFINE_float('learning_rate', 0.001, 'learning rate for ADAM')
 flags.DEFINE_float('dropout', 0.5, 'probability of keeping a neuron on')
+flags.DEFINE_boolean('layer_norm', True, 'Whether to use Layer Normalisation')
 flags.DEFINE_string('optimizer', 'AdamOptimizer', 'the optimizer to use')
 flags.DEFINE_string('model', 'GRUD', 'the model to use')
 flags.DEFINE_string('log_level', 'INFO', 'logging level')
@@ -109,6 +110,7 @@ def main(_):
                                      training_keep_prob=FLAGS.dropout,
                                      bptt_length=training_data[0][2],
                                      batch_size=FLAGS.batch_size,
+                                     layer_norm=FLAGS.layer_norm,
                                      n_classes=2)
     train_step = m.train_step()
 

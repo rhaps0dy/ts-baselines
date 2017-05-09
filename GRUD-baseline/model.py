@@ -9,7 +9,7 @@ log = logging.getLogger(__name__)
 
 class GRUD:
     def __init__(self, num_units, num_layers, input_means, training_keep_prob,
-                 bptt_length, batch_size, n_classes):
+                 bptt_length, batch_size, n_classes, layer_norm):
         assert n_classes==2, "multiclass not implemented"
         self.training_keep_prob = training_keep_prob
         self.max_batch_size = -1
@@ -23,9 +23,9 @@ class GRUD:
         self.keep_prob = tf.placeholder(tf.float32, shape=[])
 
         cells = [LayerNormDropoutGRUDCell(num_units, input_means,
-                dropout_keep_prob=self.keep_prob)]
+                dropout_keep_prob=self.keep_prob, layer_norm=layer_norm)]
         for _ in range(1, num_layers):
-            cells.append(LayerNormBasicGRUCell(num_units, dropout_keep_prob=self.keep_prob))
+            cells.append(LayerNormBasicGRUCell(num_units, dropout_keep_prob=self.keep_prob, layer_norm=layer_norm))
         if len(cells) > 1:
             self.cell = tf.contrib.rnn.MultiRNNCell(cells)
         else:
