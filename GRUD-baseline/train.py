@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 
-import tensorflow as tf
 import logging
 import math
-import numpy as np
+import os
 from collections import defaultdict
+
+import numpy as np
+import tensorflow as tf
+
 from pkl_utils import *
 import model
 
@@ -94,7 +97,7 @@ def batch_generator(dataset, batch_size):
 def main(_):
     log_dir, save_model_file, load_file = get_relevant_directories()
     input_means, (training_data, validation_data, test_data) = \
-        split_dataset('../../mimic-clean/48h_training_examples.pkl')
+        split_dataset('../../mimic-clean/48h_training_examples.pkl.gz')
 
     log.info("Building model...")
 
