@@ -51,7 +51,7 @@ def get_relevant_directories():
         FLAGS.log_dir=('{}/{}'.format(_log_dir, i))
     FLAGS.log_dir=('{}/{}'.format(_log_dir, i))
     log_file = os.path.join(FLAGS.log_dir, 'console_log.txt')
-    if not os.path.exists(FLAGS.log_dir):
+    if FLAGS.command == 'train' and not os.path.exists(FLAGS.log_dir):
         os.makedirs(FLAGS.log_dir)
     basicConfigKwargs = {'level': getattr(logging, FLAGS.log_level.upper()),
                          'format': '%(asctime)s %(name)s %(message)s'}
@@ -60,7 +60,7 @@ def get_relevant_directories():
     logging.basicConfig(**basicConfigKwargs)
     save_model_file=('{}/{}/ckpt'.format(_model_dir, i))
     save_model_dir=('{}/{}'.format(_model_dir, i))
-    if not os.path.exists(save_model_dir):
+    if FLAGS.command == 'train' and not os.path.exists(save_model_dir):
         os.makedirs(save_model_dir)
     if FLAGS.load_latest or FLAGS.load_latest_from:
         if FLAGS.load_latest:
@@ -77,7 +77,7 @@ def get_relevant_directories():
         load_file = None
     return FLAGS.log_dir, save_model_file, load_file
 
-@memoize_pickle('split_dataset.pkl')
+@memoize_pickle('split_dataset.pkl.gz')
 def split_dataset(fname):
     input_means, data = load_pickle(fname)
     ds = []
@@ -151,18 +151,21 @@ def main(_):
             log.info("Model saved in file: {:s}, validation loss {:.4f}"
                         .format(save_path, loss_mean))
     elif FLAGS.command == 'test':
-        if not os.path.exists(FLAGS.out_file):
-            with open(FLAGS.out_file, 'w') as f:
-                f.write("Optimizer\nNonlinearity\nHidden units\nTraining\nValidation\nTest\n\n")
-        with open(FLAGS.out_file, 'a') as f:
-            f.write("{}\n{}\n{}\n".format(FLAGS.optimizer,
-                FLAGS.nonlinearity, FLAGS.hidden_units))
-            _acc, = sess.run([accuracy], feed_dict_from_data(training_data, dropout=1.0))
-            f.write("{:.4f}\n".format(_acc))
-            _acc, = sess.run([accuracy], feed_dict_from_data(validation_data, dropout=1.0))
-            f.write("{:.4f}\n".format(_acc))
-            _acc, = sess.run([accuracy], feed_dict_from_data(test_data, dropout=1.0))
-            f.write("{:.4f}\n\n".format(_acc))
+        import sklearn.metrics
+        m.new_epoch()
+        for name in 'training', 'validation', 'test':
+            data = locals()[name+'_data']
+            loss_mean = 0.0
+            y_true = []
+            y_predicted = []
+            for i, example in enumerate(batch_generator(data, FLAGS.batch_size)):
+                feed_dict = m.feed_dict(example, training=False)
+                loss, pred = sess.run([m.loss, m.pred], feed_dict)
+                loss_mean += loss*len(example[0])/len(data)
+                y_true += example[3]
+                y_predicted += list(pred)
+            print(name, "loss:", loss_mean, "AUC:", sklearn.metrics.roc_auc_score(y_true, y_predicted))
+
     else:
         raise ValueError(FLAGS.command)
 
