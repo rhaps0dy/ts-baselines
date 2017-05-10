@@ -28,12 +28,13 @@ flags.DEFINE_integer('hidden_units', 100, 'Number of hidden units per LSTM layer
 flags.DEFINE_integer('hidden_layers', 1, 'Number of hidden LSTM layers')
 flags.DEFINE_float('learning_rate', 0.001, 'learning rate for ADAM')
 flags.DEFINE_float('dropout', 0.5, 'probability of keeping a neuron on')
+flags.DEFINE_boolean('layer_norm', True, 'Whether to use Layer Normalisation')
 flags.DEFINE_string('optimizer', 'AdamOptimizer', 'the optimizer to use')
 flags.DEFINE_string('model', 'GRUD', 'the model to use')
 flags.DEFINE_string('log_level', 'INFO', 'logging level')
 
 FILENAME_FLAGS = ['learning_rate', 'batch_size', 'hidden_units',
-                  'hidden_layers', 'dropout']
+                  'hidden_layers', 'dropout', 'layer_norm']
 
 FLAGS = tf.app.flags.FLAGS
 log = logging.getLogger(__name__)
@@ -109,11 +110,12 @@ def main(_):
                                      training_keep_prob=FLAGS.dropout,
                                      bptt_length=training_data[0][2],
                                      batch_size=FLAGS.batch_size,
+                                     layer_norm=FLAGS.layer_norm,
                                      n_classes=2)
     train_step = m.train_step()
 
     # Model checkpoints and graphs
-    saver = tf.train.Saver(max_to_keep=0)
+    saver = tf.train.Saver(max_to_keep=5)
     sess.run(tf.global_variables_initializer())
     if load_file:
         saver.restore(sess, load_file)
@@ -124,6 +126,7 @@ def main(_):
     validation_summary = tf.summary.scalar('validation/loss', loss_ph)
 
     if FLAGS.command == 'train':
+        min_loss_mean = 99999.
         learning_rate = FLAGS.learning_rate
         epoch_steps = (len(training_data)+FLAGS.batch_size-1) // FLAGS.batch_size
         log.info("Each epoch has {:d} steps.".format(epoch_steps))
@@ -147,9 +150,11 @@ def main(_):
             result = sess.run([validation_summary], {loss_ph: loss_mean})
             summary_writer.add_summary(result[0], summary_t)
 
-            save_path = saver.save(sess, save_model_file, global_step=summary_t)
-            log.info("Model saved in file: {:s}, validation loss {:.4f}"
-                        .format(save_path, loss_mean))
+            if loss_mean < min_loss_mean*1.1:
+                save_path = saver.save(sess, save_model_file, global_step=summary_t)
+                log.info("Model saved in file: {:s}, validation loss {:.4f}"
+                            .format(save_path, loss_mean))
+            min_loss_mean = min(min_loss_mean, loss_mean)
     elif FLAGS.command == 'test':
         import sklearn.metrics
         m.new_epoch()

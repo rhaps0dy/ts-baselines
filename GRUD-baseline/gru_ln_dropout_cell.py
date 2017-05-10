@@ -27,12 +27,12 @@ class LayerNormDropoutGRUDCell(tf.contrib.rnn.LayerNormBasicLSTMCell):
         else:
             args = inputs[0]
         with tf.variable_scope(name):
+            out_size = n_outs*each_out_size
             if is_diagonal:
                 assert n_outs == 1 and each_out_size == args.get_shape()[-1]
                 weights = tf.get_variable("weights", [each_out_size], dtype=tf.float32)
                 out = args * weights
             else:
-                out_size = n_outs*each_out_size
                 proj_size = args.get_shape()[-1]
                 weights = tf.get_variable("weights", [proj_size, out_size], dtype=tf.float32)
                 out = tf.matmul(args, weights)
@@ -99,7 +99,7 @@ class LayerNormBasicGRUCell(tf.contrib.rnn.LayerNormBasicLSTMCell):
                                                 n_outs, name)
 
     def __call__(self, inputs, state, scope=None):
-        with tf.variable_scope(self, scope or "layer_norm_basic_gru_cell"):
+        with tf.variable_scope(scope or "layer_norm_basic_gru_cell"):
             z, r = self._linear([inputs, state], self._num_units, 2, "gates_1")
             if self._layer_norm:
                 z = self._norm(z, "update")
