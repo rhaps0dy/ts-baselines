@@ -26,7 +26,12 @@ class TrainingManager:
                          "bptt_len={:d}").format(self.total_talk_len %
                          self.bptt_len, self.bptt_len))
 
-        self.training_data = np.zeros([batch_size, self.total_len], dtype=np.int32)
+        training_data_shape = [batch_size, self.total_len]
+        try:
+            training_data_shape += list(self.talks[0][0].shape)
+        except AttributeError:
+            pass
+        self.training_data = np.zeros(training_data_shape, dtype=np.int32)
         seq_len = np.ones([batch_size], dtype=np.int32)
         self.sequence_length = seq_len * self.bptt_len
         self.partial_sequence_length = seq_len * ((self.total_talk_len - 1) %
@@ -52,7 +57,7 @@ class TrainingManager:
         assert indices.shape[0] == self.batch_size
         for batch_i, i in enumerate(indices):
             self.training_data[batch_i, :self.total_talk_len] = (
-                np.roll(concat_talks, i))
+                np.roll(concat_talks, i, axis=0))
         return self.training_data
 
     def __iter__(self):
@@ -102,7 +107,12 @@ class TestManager:
         for talk_start, cutoff in enumerate(cutoffs):
             talk_start *= bptt_len
 
-            ts = np.zeros([cutoff, bptt_len+1], dtype=np.int32)
+            ts_shape = [cutoff, bptt_len+1]
+            try:
+                ts_shape += list(talks[0][0].shape)
+            except AttributeError:
+                pass
+            ts = np.zeros(ts_shape, dtype=np.int32)
             tlens = np.zeros([cutoff], dtype=np.int32)
             for i in range(cutoff):
                 n = tlens[i] = min(len(talks[i])-talk_start-1, bptt_len)

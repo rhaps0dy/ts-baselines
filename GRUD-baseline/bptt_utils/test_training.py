@@ -5,16 +5,27 @@ import math
 from training import TrainingManager, TestManager
 
 class TrainingManagerTest(unittest.TestCase):
-    @staticmethod
-    def example_list_from(talks, bptt_len):
-        tm = TrainingManager(talks, 1, bptt_len)
+    TestedClass = TrainingManager
+
+    @classmethod
+    def example_list_from(klass, talks, bptt_len):
+        tm = klass.TestedClass(talks, 1, bptt_len)
         return list(list(a[0,:b[0]+1]) for a, b in tm)
 
     def test_good_iteration(self):
-        talks = list(list(range(i)) for i in [12, 4, 7])
-        tm = TrainingManager(talks, 10, 4)
+        talks = list(np.arange(i) for i in [12, 4, 7])
+        tm = self.TestedClass(talks, 10, 4)
         examples = list(tm)
         self.assertFalse(examples[0][0][:,0].any(), "All the rows start with a zero")
+        self.assertTrue(all((exm[0][0].shape[0] == 5) for exm in examples),
+                        "All examples need to be bptt_len + 1 in length")
+
+    def test_multidimensional_input(self):
+        talks = list(np.stack(list(np.repeat(j, 3) for j in range(i)), axis=0)
+                     for i in [10,5,2])
+        tm = self.TestedClass(talks, 10, 4)
+        examples = list(tm)
+        self.assertFalse(examples[0][0][:,0,:].any(), "All the rows start with a zero")
         self.assertTrue(all((exm[0][0].shape[0] == 5) for exm in examples),
                         "All examples need to be bptt_len + 1 in length")
 
@@ -33,7 +44,7 @@ class TrainingManagerTest(unittest.TestCase):
     def test_all_lengths(self):
         bptt_len = 10
         for conversation_len in range(3, bptt_len*3+2):
-            tm = TrainingManager([np.arange(conversation_len)], 1, bptt_len)
+            tm = self.TestedClass([np.arange(conversation_len)], 1, bptt_len)
             tm = list(tm)
             self.assertTrue(all(e.shape[1]==(bptt_len+1) for e, l in tm), "All"
                             " examples must have the appropriate array size")
@@ -45,16 +56,15 @@ class TrainingManagerTest(unittest.TestCase):
                     self.assertEqual(tm[i][0][j,-1], tm[i+1][0][j, 0],
                                     "Sentences are a continuation")
 
-class TestManagerTest(unittest.TestCase):
-    def __init__(self, *args, **kwargs):
-        self.TestedClass = TestManager
-        super(TestManagerTest, self).__init__(*args, **kwargs)
+class TestManagerTest(TrainingManagerTest):
+    TestedClass = TestManager
 
     def test_all_lengths(self):
+        "Overriden"
         bptt_len = 10
         max_conversation_len = bptt_len*3+2
         for conversation_len in range(3, max_conversation_len+1):
-            _tm = TestManager([np.arange(conversation_len)], 1, bptt_len)
+            _tm = self.TestedClass([np.arange(conversation_len)], 1, bptt_len)
             tm = list(_tm)
             self.assertTrue(all(e.shape[1]==(bptt_len+1) for e, l in tm), "All"
                             " examples must have the appropriate array size")
@@ -72,7 +82,7 @@ class TestManagerTest(unittest.TestCase):
         bptt_len = 10
         max_conversation_len = bptt_len*3+2
         talks = list(np.arange(i) for i in range(3,max_conversation_len+1))
-        _tm = TestManager(talks, len(talks), bptt_len)
+        _tm = self.TestedClass(talks, len(talks), bptt_len)
         tm = list(_tm)
         self.assertTrue(all(e.shape[1]==(bptt_len+1) for e, l in tm), "All"
                         " examples must have the appropriate array size")

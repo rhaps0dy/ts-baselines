@@ -6,7 +6,7 @@ from cell import ResetStateCellWrapper
 
 class TestCell(tf.contrib.rnn.RNNCell):
     state_size = tf.contrib.rnn.LSTMStateTuple(1, 1)
-    output_size = 3
+    output_size = 4
 
     def __init__(self):
         pass
@@ -19,7 +19,7 @@ class TestResetStateCellWrapper(unittest.TestCase):
     def test_reset_state(self):
         inputs = tf.contrib.rnn.LSTMStateTuple(
             tf.constant([[[0], [0], [0], [0], [1]]], dtype=tf.float32),
-            tf.constant([[[2], [3], [3], [-2], [0]]], dtype=tf.float32))
+            tf.constant([[[2,-2], [3,-3], [3,-3], [-2,2], [0,3]]], dtype=tf.float32))
         cell = ResetStateCellWrapper(TestCell(), batch_size=1)
         outputs, _next_state = tf.nn.dynamic_rnn(
             cell, inputs=inputs,
@@ -29,11 +29,11 @@ class TestResetStateCellWrapper(unittest.TestCase):
             sess.run(tf.global_variables_initializer())
             result = sess.run([outputs], {})[0]
         true_result = np.array([[
-            [ 1., 1., 2.],
-            [ 2., 2., 3.],
-            [ 3., 3., 3.],
-            [ 4., 4., -2.],
-            [ 1., 1., 0.]]], dtype=np.float32)
+            [ 1., 1., 2., -2.],
+            [ 2., 2., 3., -3.],
+            [ 3., 3., 3., -3.],
+            [ 4., 4., -2., 2.],
+            [ 1., 1., 0., 3.]]], dtype=np.float32)
         self.assertTrue(np.all(result == true_result))
 
 
