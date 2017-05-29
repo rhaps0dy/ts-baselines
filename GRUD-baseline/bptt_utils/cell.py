@@ -35,8 +35,8 @@ class ResetStateCellWrapper(tf.contrib.rnn.RNNCell):
             elems = (replace(condition, i, j) for i, j in zip(t, f))
             return t.__class__(*elems)
 
-        needs_reset, _inputs = inputs
+        needs_reset = inputs[:,0]
         with tf.variable_scope(scope or 'wrapped'):
             _state = replace(tf.equal(needs_reset, 0.0),
                              state, self._zero_state)
-            return self._cell(_inputs, _state)
+            return self._cell(inputs[:,1:], _state)

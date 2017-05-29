@@ -17,9 +17,9 @@ class TestCell(tf.contrib.rnn.RNNCell):
 
 class TestResetStateCellWrapper(unittest.TestCase):
     def test_reset_state(self):
-        inputs = tf.contrib.rnn.LSTMStateTuple(
-            tf.constant([[[0], [0], [0], [0], [1]]], dtype=tf.float32),
-            tf.constant([[[2,-2], [3,-3], [3,-3], [-2,2], [0,3]]], dtype=tf.float32))
+        inputs = tf.constant(
+            [[[0,2,-2], [0,3,-3], [0,3,-3], [0,-2,2], [1,0,3]]],
+            dtype=tf.float32)
         cell = ResetStateCellWrapper(TestCell(), batch_size=1)
         outputs, _next_state = tf.nn.dynamic_rnn(
             cell, inputs=inputs,
