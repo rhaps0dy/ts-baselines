@@ -2,43 +2,144 @@ import tensorflow as tf
 import numpy as np
 import math
 from gru_ln_dropout_cell import LayerNormDropoutGRUDCell, LayerNormBasicGRUCell
+from slugify import slugify
+import collections
 
-def GRUD(self, num_units, num_layers, input_means, inputs, training_keep_prob,
-         learning_rate, batch_size, layer_norm):
+from tensorflow.python.util import nest
 
+_used_names = set()
+def _make_embedding(_name, n_cats, index):
+    name = slugify(_name, separator='_')
+    # Workaround for duplicated names
+    while name in _used_names:
+        name += '1'
+    _used_names.add(name)
+    ###
+
+    # We use the ceiling of log2(n_cats), each dimension can hold a bit.
+    n_dims = int(math.ceil(np.log2(n_cats)))
+    embeddings = tf.get_variable(
+        name,
+        shape=[n_cats+2, n_dims], # TODO: investigate why n_cats is off by one
+        dtype=tf.float32,
+        initializer=tf.contrib.layers.xavier_initializer(), # TODO: make NaN
+        trainable=True)
+    return tf.nn.embedding_lookup(embeddings, index+1), n_dims
+
+def _embed_categorical(inputs, categorical_headers, number_of_categories):
+    "Embed categorical inputs and concatenate them with numerical inputs"
+    recurrent_inputs_l = [inputs['numerical_ts']]
+    recurrent_inputs_dt_l = [inputs['numerical_ts_dt']]
+    static_inputs_l = [inputs['numerical_static']]
+    with tf.variable_scope('embeddings'):
+        for i, h in enumerate(categorical_headers):
+            n_cats = number_of_categories['categorical_ts'][i]
+            input_slice = inputs['categorical_ts'][:,:,i]
+            dt_slice = inputs['categorical_ts_dt'][:,i:i+1]
+            t, n_dims = _make_embedding(h, n_cats, input_slice)
+            recurrent_inputs_l.append(t)
+            recurrent_inputs_dt_l.append(tf.tile(dt_slice, [1, n_dims]))
+
+
+        for i, n_cats in enumerate(
+                number_of_categories['categorical_static']):
+            input_slice = inputs['categorical_static'][:,i]
+            static_inputs_l.append(_make_embedding(
+                'static_{:d}'.format(i), n_cats, input_slice)[0])
+    recurrent_inputs = tf.concat(recurrent_inputs_l, axis=2)
+    recurrent_inputs_dt = tf.concat(recurrent_inputs_dt_l, axis=1)
+    assert recurrent_inputs.get_shape()[2] == recurrent_inputs_dt.get_shape()[1]
+    static_inputs = tf.concat(static_inputs_l, axis=1)
+    return recurrent_inputs, recurrent_inputs_dt, static_inputs
+
+def _tile_static(recurrent_inputs, recurrent_inputs_dt, static_inputs):
+    "Tile static input to each time step"
+    static_inputs_dt = tf.zeros_like(static_inputs, dtype=tf.float32)
+    tiled_static_inputs = tf.tile(tf.expand_dims(static_inputs, 1),
+                                  [1, tf.shape(recurrent_inputs)[1], 1])
+    inputs_dt = tf.concat([recurrent_inputs_dt, static_inputs_dt], axis=1)
+    inputs = tf.concat([recurrent_inputs, tiled_static_inputs], axis=2)
+    return inputs, inputs_dt
+
+
+def GRUD(num_units, num_layers, inputs_dict, input_means_dict,
+         number_of_categories, categorical_headers, default_batch_size,
+         layer_norm):
+
+    keep_prob = tf.placeholder(shape=[], dtype=tf.float32)
+    recurrent_inputs, recurrent_inputs_dt, static_inputs = _embed_categorical(
+        inputs_dict, categorical_headers, number_of_categories)
+
+    inputs, inputs_dt = _tile_static(recurrent_inputs, recurrent_inputs_dt,
+                                     static_inputs)
+    # If this were not a risk score, we could concatenate
+    # `inputs_dict['time_until_label']` with `inputs` here
+
+    # Input means will default to 0 for categorical variables
+    input_means = np.zeros([inputs_dt.get_shape()[1]], dtype=np.float32)
+    input_means[:inputs_dict['numerical_ts_dt'].get_shape()[1]] = (
+        input_means_dict['numerical_ts'])
+
+    # Create cell
     cells = [LayerNormDropoutGRUDCell(num_units, input_means,
-            dropout_keep_prob=self.keep_prob, layer_norm=layer_norm)]
+            dropout_keep_prob=keep_prob, layer_norm=layer_norm)]
     for _ in range(1, num_layers):
         cells.append(LayerNormBasicGRUCell(
-            num_units, dropout_keep_prob=self.keep_prob, layer_norm=layer_norm))
+            num_units, dropout_keep_prob=keep_prob, layer_norm=layer_norm))
     if len(cells) > 1:
         cell = tf.contrib.rnn.MultiRNNCell(cells)
     else:
         cell = cells[0]
 
-    rnn_outputs, next_state = tf.nn.dynamic_rnn(
-        cell,
-        inputs=inputs['numerical_ts'],
-        sequence_length=inputs['length'],
-        initial_state=cell.zero_state(dtype=tf.float32)
-        dtype=tf.float32)
+    # Create cell's initial state
+    state_size_flat = nest.flatten(cell.state_size)
+    ini_state_flat = []
+    for i, sz in enumerate(state_size_flat):
+        if i==1:
+            # This is the part containing the time since last input
+            ini_state_flat.append(inputs_dt)
+        else:
+            ini_state_flat.append(tf.zeros(
+                [tf.shape(inputs_dict['label'])[0], sz], dtype=tf.float32))
+    initial_state = nest.pack_sequence_as(structure=cell.state_size,
+                                          flat_sequence=ini_state_flat)
 
-    inds = tf.stack([tf.range(tf.shape(self.sequence_length)[0]),
-                        self.sequence_length-1], axis=1)
-    last_outputs = tf.gather_nd(self.rnn_outputs, inds)
+    # Create RNN
+    rnn_outputs, _ = tf.nn.dynamic_rnn(
+        cell, inputs=inputs,
+        sequence_length=inputs_dict['length'],
+        initial_state=initial_state,
+        dtype=tf.float32,
+        parallel_iterations=default_batch_size*2)
 
-    with tf.variable_scope("softmax_layer"):
-        self.W = tf.get_variable("W", dtype=tf.float32,
-                                    shape=[self.cell.output_size],
-                                    initializer=tf.contrib.layers.xavier_initializer(),
-                                    trainable=True)
-        self.b = tf.get_variable("b", dtype=tf.float32,
-                                    shape=[],
-                                    initializer=tf.constant_initializer(0.1),
-                                    trainable=True)
-        logit = tf.reduce_sum(last_outputs * self.W, axis=1) + self.b
-    xent_loss = tf.nn.sigmoid_cross_entropy_with_logits(logits=logits, labels=self.labels)
-    self.loss = tf.reduce_mean(xent_loss)
-    self.pred = tf.nn.sigmoid(logits)
+    # Flatten the outputs so we can compare with the labels
+    with tf.variable_scope("sequence_mask"):
+        mask = tf.sequence_mask(inputs_dict['length'], tf.shape(rnn_outputs)[1])
+        flat_rnn_outputs = tf.boolean_mask(rnn_outputs, mask)
+        flat_labels = tf.boolean_mask(inputs_dict['label'], mask)
 
-    return tf.train.AdamOptimizer(learning_rate=self.learning_rate_ph).minimize(self.loss)
+    with tf.variable_scope("logistic_layer"):
+        weight = tf.get_variable(
+            "W", dtype=tf.float32,
+            shape=[cell.output_size],
+            initializer=tf.contrib.layers.xavier_initializer(),
+            trainable=True)
+        bias = tf.get_variable(
+            "b", dtype=tf.float32,
+            shape=[],
+            initializer=tf.constant_initializer(0.1),
+            trainable=True)
+        flat_logits = tf.reduce_sum(flat_rnn_outputs * weight, axis=1) + bias
+        prediction = tf.nn.sigmoid(flat_logits)
+
+    xent_loss = tf.nn.sigmoid_cross_entropy_with_logits(
+        logits=flat_logits, labels=flat_labels)
+    loss = tf.reduce_mean(xent_loss)
+    # We could add autoregression to the loss
+    # As well as predicting `input_dict['treatments_ts']`
+
+    return {'risk_score': prediction,
+            'loss': loss,
+            'keep_prob': keep_prob}
+
+# Calculate AUC with prediction

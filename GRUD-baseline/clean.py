@@ -1,5 +1,5 @@
 """
-Creates a list of Examples and saves them to "clean.pkl.gz"
+Creates a list of Examples and saves them to "dataset/*.tfrecords"
 
 NpExample = collections.namedtuple('NpExample', [
     'icustay_id', 'ventilation_ends', 'time_until_label', 'label',
@@ -16,7 +16,11 @@ import tensorflow as tf
 import gzip
 import csv
 import math
+import os
+import os.path
 from tqdm import tqdm
+
+N_PROCESSORS = 8
 
 def get_headers(table):
     with gzip.open('../../{:s}.csv.gz'.format(table), 'rt',
@@ -34,7 +38,7 @@ def determine_type(header, b_is_category):
     else:
         raise ValueError(header)
 
-@pu.memoize('parsed_dataframe_{n_frequent:d}.pkl', log_level='warn')
+@pu.memoize('parsed_dataframe_{n_frequent:d}.pkl.gz', log_level='warn')
 def parse_csv_frequent_headers(n_frequent):
     zero_headers = get_headers('outputevents')
     bool_headers = (get_headers('procedureevents_mv') +
@@ -69,7 +73,7 @@ def parse_csv_frequent_headers(n_frequent):
                 false_values=[b'0', b''])
     return df, fillna, numerical_headers, categorical_headers, bool_headers
 
-@pu.memoize('static_data.pkl.gz', log_level='warn')
+@pu.memoize('dataset/static_data.pkl.gz', log_level='warn')
 def get_static_data():
     numerical = ["r_admit_time", "b_gender", "r_age", "i_previous_admissions",
                "i_previous_icustays"]
@@ -92,13 +96,13 @@ def _bytes_feature(values):
 def _float_feature(values):
   return tf.train.Feature(float_list=tf.train.FloatList(value=values))
 
-@pu.memoize('means.pkl.gz')
+@pu.memoize('dataset/means.pkl.gz')
 def compute_means(df, numerical_headers, categorical_headers):
     numerical_ts_means = df[numerical_headers].mean(axis=0).values
-    categorical_ts_means = (df[categorical_headers].mode(axis=0)
+    categorical_ts_modes = (df[categorical_headers].mode(axis=0)
                             .iloc[0].apply(int).values)
     return {'numerical_ts': numerical_ts_means,
-            'categorical_ts': categorical_ts_means}
+            'categorical_ts': categorical_ts_modes}
 
 def get_invalid_icustays():
     with gzip.open('../../icustay_cv.txt.gz') as f:
@@ -107,7 +111,7 @@ def get_invalid_icustays():
 def split_dataframe(n_frequent):
     mimic, fillna, numerical_headers, categorical_headers, treatments_headers = \
         parse_csv_frequent_headers(n_frequent=n_frequent)
-        #pu.load('small.pkl.gz')
+        #pu.load('dataset/small.pkl.gz')
     static_data_numerical, static_data_categorical = get_static_data()
 
     pu.dump({'numerical_ts': len(numerical_headers),
@@ -115,19 +119,18 @@ def split_dataframe(n_frequent):
              'treatments_ts': len(treatments_headers),
              'numerical_static': static_data_numerical.shape[1],
              'categorical_static': static_data_categorical.shape[1],
-        }, 'feature_numbers.pkl.gz')
+        }, 'dataset/feature_numbers.pkl.gz')
 
     # Discard patients who have any CV data, and fill
     invalid_icustays = get_invalid_icustays()
     print("Computing valid indices...")
     valid_icustays = list(set(mimic.index).difference(invalid_icustays))
     print("Splitting...")
-    N_CORES = 8
-    step = int(math.ceil(valid_icustays / 8))
+    step = int(math.ceil(len(valid_icustays) / N_PROCESSORS))
     j = 0
     for i in range(0, len(valid_icustays), step):
         pu.dump(mimic.loc[valid_icustays[i:i+step]].fillna(fillna),
-                'dataset_{:d}.pkl.gz'.format(j))
+                'dataset/dataset_{:d}.pkl.gz'.format(j))
         j += 1
     #print("Filling...")
     #mimic = mimic.fillna(fillna)
@@ -135,8 +138,9 @@ def split_dataframe(n_frequent):
     #compute_means(mimic, numerical_headers, categorical_headers)
 
 
-def clean(mimic, numerical_headers, categorical_headers, treatments_headers):
-    with tf.python_io.TFRecordWriter("hour_ventilation.tfrecords") as writer:
+def clean(mimic, i, numerical_headers, categorical_headers, treatments_headers,
+          static_data_numerical, static_data_categorical):
+    with tf.python_io.TFRecordWriter("hv_{:d}.tfrecords".format(i)) as writer:
         n_examples = 0
         for icustay_id, df in tqdm(mimic.groupby(level=0)):
             print("Doing icustay_id", icustay_id, "...")
@@ -144,6 +148,9 @@ def clean(mimic, numerical_headers, categorical_headers, treatments_headers):
             if len(ventilation_ends) == 0:
                 continue
             ts_len = ventilation_ends[-1,0]+1
+            if ts_len == 0:
+                print("LENGTH 0: icustay_id", icustay_id)
+                continue
 
             time_until_label = np.empty([ts_len], dtype=np.float32)
             for hour, _ in reversed(ventilation_ends):
@@ -212,11 +219,66 @@ def clean(mimic, numerical_headers, categorical_headers, treatments_headers):
             sequence('numerical_ts', 'float', numerical_ts),
             sequence('categorical_ts', 'int64', categorical_ts),
             sequence('treatments_ts', 'float', treatments_ts.astype(np.float32)),
+            sequence('ventilation_ends', 'int64', ventilation_ends[:,0])
 
             writer.write(example.SerializeToString())
 
             if n_examples > 10:
                 break
 
+
+
 if __name__ == '__main__':
-    split_dataframe(n_frequent=200)
+    #split_dataframe(n_frequent=200)
+
+    import sys
+    if sys.argv[1] == 'number_of_categories':
+        _, static_data_categorical = get_static_data()
+        mimic, _, _, categorical_headers, _ = \
+            parse_csv_frequent_headers(n_frequent=200)
+        out = {}
+        l = []
+        for h in categorical_headers:
+            l.append(len(mimic[h].cat.categories))
+        out['categorical_ts'] = l
+        out['categorical_static'] = (
+            static_data_categorical.max(axis=0).values.tolist())
+        pu.dump(out, 'dataset/number_of_categories.pkl.gz')
+
+    elif sys.argv[1] == 'split_dataset':
+        records = list(it.chain(
+            *(tf.python_io.tf_record_iterator('hv_{:d}.tfrecords'.format(i))
+                 for i in range(N_PROCESSORS))))
+        os.mkdir('dataset')
+        def write(data, fname):
+            p = os.path.join('dataset', fname)
+            with tf.python_io.TFRecordWriter(p) as f:
+                for d in data:
+                    f.write(d)
+
+        print("We have {:d} records in total".format(len(records)))
+        np.random.shuffle(records)
+        n_testing = len(records) // 5
+        print("20% ({:d}) records for testing".format(n_testing))
+        write(records[:n_testing], 'test.tfrecords')
+
+        records = records[n_testing:]
+        n_folds = 5
+        n_validation = int(math.ceil((len(records)-n_testing) / n_folds))
+        print("16% ({:d}) records for validation".format(n_validation))
+        print("And the rest ({:d}) for training"
+              .format(len(records)-n_validation))
+        for j, i in enumerate(range(0, len(records), n_validation)):
+            write(it.chain(records[:i], records[i+n_validation:]),
+                  'train_{:d}.tfrecords'.format(j))
+            write(records[i:i+n_validation],
+                  'validation_{:d}.tfrecords'.format(j))
+    else:
+        _, _, numerical_headers, categorical_headers, treatments_headers = \
+            pu.load('dataset/small.pkl.gz')
+        del _
+        i = int(sys.argv[1])
+        mimic = pu.load('dataset/dataset_{:d}.pkl.gz'.format(i))
+        static_data_numerical, static_data_categorical = get_static_data()
+        clean(mimic, i, numerical_headers, categorical_headers, treatments_headers,
+            static_data_numerical, static_data_categorical)
