@@ -34,7 +34,7 @@ def determine_type(header, b_is_category):
     else:
         raise ValueError(header)
 
-@pu.memoize('parsed_dataframe_{n_frequent:d}.pkl.gz', log_level='warn')
+@pu.memoize('parsed_dataframe_{n_frequent:d}.pkl', log_level='warn')
 def parse_csv_frequent_headers(n_frequent):
     zero_headers = get_headers('outputevents')
     bool_headers = (get_headers('procedureevents_mv') +
@@ -92,10 +92,22 @@ def _bytes_feature(values):
 def _float_feature(values):
   return tf.train.Feature(float_list=tf.train.FloatList(value=values))
 
-def clean(n_frequent):
+@pu.memoize('means.pkl.gz')
+def compute_means(df, numerical_headers, categorical_headers):
+    numerical_ts_means = df[numerical_headers].mean(axis=0).values
+    categorical_ts_means = (df[categorical_headers].mode(axis=0)
+                            .iloc[0].apply(int).values)
+    return {'numerical_ts': numerical_ts_means,
+            'categorical_ts': categorical_ts_means}
+
+def get_invalid_icustays():
+    with gzip.open('../../icustay_cv.txt.gz') as f:
+        return set(map(int, f.read().split()))
+
+def split_dataframe(n_frequent):
     mimic, fillna, numerical_headers, categorical_headers, treatments_headers = \
-        pu.load('small.pkl.gz')
-        #parse_csv_frequent_headers(n_frequent=n_frequent)
+        parse_csv_frequent_headers(n_frequent=n_frequent)
+        #pu.load('small.pkl.gz')
     static_data_numerical, static_data_categorical = get_static_data()
 
     pu.dump({'numerical_ts': len(numerical_headers),
@@ -106,14 +118,28 @@ def clean(n_frequent):
         }, 'feature_numbers.pkl.gz')
 
     # Discard patients who have any CV data, and fill
-    #usable_hadm_ids, icustay_hadmid_drift = pu.load('../../mimic-clean/db_things.pkl.gz')
-    #mimic = mimic.select((lambda icustay_id: icustay_hadmid_drift[icustay_id][1] in
-    #                      usable_hadm_ids), axis=0).fillna(fillna)
-    mimic = mimic.fillna(fillna)
+    invalid_icustays = get_invalid_icustays()
+    print("Computing valid indices...")
+    valid_icustays = list(set(mimic.index).difference(invalid_icustays))
+    print("Splitting...")
+    N_CORES = 8
+    step = int(math.ceil(valid_icustays / 8))
+    j = 0
+    for i in range(0, len(valid_icustays), step):
+        pu.dump(mimic.loc[valid_icustays[i:i+step]].fillna(fillna),
+                'dataset_{:d}.pkl.gz'.format(j))
+        j += 1
+    #print("Filling...")
+    #mimic = mimic.fillna(fillna)
+    #print("Computing means...")
+    #compute_means(mimic, numerical_headers, categorical_headers)
 
+
+def clean(mimic, numerical_headers, categorical_headers, treatments_headers):
     with tf.python_io.TFRecordWriter("hour_ventilation.tfrecords") as writer:
         n_examples = 0
         for icustay_id, df in tqdm(mimic.groupby(level=0)):
+            print("Doing icustay_id", icustay_id, "...")
             ventilation_ends = df[['hour', 'B pred last_ventilator']].dropna().values
             if len(ventilation_ends) == 0:
                 continue
@@ -182,7 +208,7 @@ def clean(n_frequent):
             context('categorical_ts_dt', 'float', categorical_ts_dt),
 
             sequence('time_until_label', 'float', time_until_label),
-            sequence('label', 'int64', label.astype(np.int64)),
+            sequence('label', 'float', label.astype(np.float32)),
             sequence('numerical_ts', 'float', numerical_ts),
             sequence('categorical_ts', 'int64', categorical_ts),
             sequence('treatments_ts', 'float', treatments_ts.astype(np.float32)),
@@ -193,4 +219,4 @@ def clean(n_frequent):
                 break
 
 if __name__ == '__main__':
-    c = clean(n_frequent=200)
+    split_dataframe(n_frequent=200)
