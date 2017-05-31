@@ -91,5 +91,7 @@ ENV/
 logs
 model
 *.pkl
+*.pkl.gz
+*.tfrecords
 
 .DS_Store
