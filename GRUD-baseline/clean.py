@@ -242,7 +242,7 @@ if __name__ == '__main__':
             l.append(len(mimic[h].cat.categories))
         out['categorical_ts'] = l
         out['categorical_static'] = (
-            static_data_categorical.max(axis=0).values.tolist())
+            (static_data_categorical.max(axis=0).values+1).tolist())
         pu.dump(out, 'dataset/number_of_categories.pkl.gz')
 
     elif sys.argv[1] == 'split_dataset':

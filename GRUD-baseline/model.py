@@ -20,10 +20,12 @@ def _make_embedding(_name, n_cats, index):
     n_dims = int(math.ceil(np.log2(n_cats)))
     embeddings = tf.get_variable(
         name,
-        shape=[n_cats+2, n_dims], # TODO: investigate why n_cats is off by one
+        shape=[n_cats+1, n_dims],
         dtype=tf.float32,
         initializer=tf.contrib.layers.xavier_initializer(), # TODO: make NaN
         trainable=True)
+    make_nan = embeddings[0,:].assign([np.nan]*n_dims)
+    tf.add_to_collection('make_embeddings_nan', make_nan)
     return tf.nn.embedding_lookup(embeddings, index+1), n_dims
 
 def _embed_categorical(inputs, categorical_headers, number_of_categories):

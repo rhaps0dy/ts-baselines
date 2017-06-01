@@ -65,6 +65,7 @@ if __name__ == '__main__':
     loss_avg = 0.0
     d = {m['keep_prob']: FLAGS.dropout, loss_ph: 0.0}
     with sv.managed_session() as sess:
+        sess.run(tf.get_collection('make_embeddings_nan'))
         for step in it.count(1):
             if sv.should_stop():
                 break
