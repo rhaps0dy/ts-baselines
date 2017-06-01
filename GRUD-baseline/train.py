@@ -1,6 +1,7 @@
 import tensorflow as tf
 import pickle_utils as pu
 import itertools as it
+import os.path
 
 from read_tfrecords import build_input_machinery
 import model
@@ -55,11 +56,15 @@ if __name__ == '__main__':
     #summary_op = tf.merge_all_summaries()
 
     sv = tf.train.Supervisor(is_chief=True,
-                             logdir="./logs",
+                             logdir=FLAGS.log_dir,
                              summary_op=None,
                              saver=saver,
                              global_step=global_step,
                              save_model_secs=600)
+
+    with open(os.path.join(FLAGS.log_dir, 'flags.txt'), 'w') as f:
+        f.write(repr(FLAGS.__flags)+'\n')
+
     normal_ops = [train_op, m['loss']]
     summary_ops = [train_op, m['loss'], training_summary]
     loss_avg = 0.0
