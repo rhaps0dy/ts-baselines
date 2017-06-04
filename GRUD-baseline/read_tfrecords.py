@@ -5,7 +5,7 @@ import itertools as it
 def read_and_decode(filename_queue):
     f_num = pu.load('dataset/feature_numbers.pkl.gz')
     reader = tf.TFRecordReader()
-    _q, serialized_example = reader.read(filename_queue)
+    _, serialized_example = reader.read(filename_queue)
     context, sequence = tf.parse_single_sequence_example(
         serialized_example,
         # Defaults are not specified since both keys are required.
@@ -74,6 +74,6 @@ def build_input_machinery(filenames, do_shuffle, num_epochs, batch_size,
     qr2 = tf.train.QueueRunner(padding_q, [padding_op]*n_queue_threads)
     tf.train.add_queue_runner(qr2)
 
-    batched_data = padding_q.dequeue_many(batch_size)
+    batched_data = padding_q.dequeue_up_to(batch_size)
 
     return dict(zip(d_keys, batched_data))

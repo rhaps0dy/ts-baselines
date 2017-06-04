@@ -7,14 +7,8 @@ import collections
 
 from tensorflow.python.util import nest
 
-_used_names = set()
 def _make_embedding(_name, n_cats, index):
     name = slugify(_name, separator='_')
-    # Workaround for duplicated names
-    while name in _used_names:
-        name += '1'
-    _used_names.add(name)
-    ###
 
     # We use the ceiling of log2(n_cats), each dimension can hold a bit.
     n_dims = int(math.ceil(np.log2(n_cats)))
@@ -33,11 +27,20 @@ def _embed_categorical(inputs, categorical_headers, number_of_categories):
     recurrent_inputs_l = [inputs['numerical_ts']]
     recurrent_inputs_dt_l = [inputs['numerical_ts_dt']]
     static_inputs_l = [inputs['numerical_static']]
+
+    _used_names = set()
     with tf.variable_scope('embeddings'):
         for i, h in enumerate(categorical_headers):
             n_cats = number_of_categories['categorical_ts'][i]
             input_slice = inputs['categorical_ts'][:,:,i]
             dt_slice = inputs['categorical_ts_dt'][:,i:i+1]
+
+            # Workaround for duplicated names
+            while h in _used_names:
+                h += '1'
+            _used_names.add(h)
+            ###
+
             t, n_dims = _make_embedding(h, n_cats, input_slice)
             recurrent_inputs_l.append(t)
             recurrent_inputs_dt_l.append(tf.tile(dt_slice, [1, n_dims]))
@@ -140,8 +143,63 @@ def GRUD(num_units, num_layers, inputs_dict, input_means_dict,
     # We could add autoregression to the loss
     # As well as predicting `input_dict['treatments_ts']`
 
-    return {'risk_score': prediction,
+    return {'flat_risk_score': prediction,
             'loss': loss,
-            'keep_prob': keep_prob}
+            'keep_prob': keep_prob,
+            'flat_labels': flat_labels}
 
 # Calculate AUC with prediction
+import sklearn.metrics.ranking
+
+def ventilation_risk_score(inputs_dict, outputs_dict, hours_before):
+    def _ventilation_risk_score(vent_ends, labels, predictions):
+        assert len(predictions.shape) == 1
+        assert len(vent_ends.shape) == 1
+        assert labels.shape == vent_ends.shape
+
+        _hours_before = hours_before[:] # copy
+        _hours_before.sort(reverse=True)
+
+        d = dict((h, ([], [])) for h in _hours_before)
+
+        prev_ve = 0
+        for label, vent_end in zip(labels, vent_ends):
+            for h in _hours_before:
+                if vent_end-h > prev_ve:
+                    l1, l2 = d[h]
+                    l1.append(predictions[prev_ve:vent_end-h].max())
+                    l2.append(label)
+            prev_ve = vent_end
+
+        def _binary_auc_tpr_ppv(y_true, y_score, sample_weight=None):
+            if len(y_true) <= 1:
+                return np.nan
+            tps, fps, thresholds = \
+                sklearn.metrics.ranking._binary_clf_curve(
+                    y_true, y_score, sample_weight=sample_weight)
+            tpr = tps / sum(y_true)
+            ppv = tps / (tps + fps)
+            print("shapes:", tpr.shape, ppv.shape)
+            return sklearn.metrics.ranking.auc(tpr, ppv, reorder=True)
+
+        for hour, (predictions, labels) in d.items():
+            d[hour] = _binary_auc_tpr_ppv(labels, predictions)
+        return list(d[h] for h in hours_before)
+
+
+    with tf.variable_scope("tpr_ppv"):
+        ventilation_mask = tf.sequence_mask(
+            inputs_dict['n_ventilations'], tf.shape(inputs_dict['ventilation_ends'])[1])
+        ventilation_ends_for_flat_labels = \
+            inputs_dict['ventilation_ends'] + tf.expand_dims(
+                tf.cumsum(inputs_dict['length'], exclusive=True), 1)
+        flat_ventilation_ends = tf.boolean_mask(
+            ventilation_ends_for_flat_labels, ventilation_mask)
+
+        labels = tf.gather(outputs_dict['flat_labels'], flat_ventilation_ends)
+
+        return [flat_ventilation_ends+1, labels, outputs_dict['flat_risk_score']], _ventilation_risk_score #tf.py_func(
+            #_ventilation_risk_score,
+            #,
+            #Tout=[tf.float32]*len(hours_before),
+            #stateful=False)
