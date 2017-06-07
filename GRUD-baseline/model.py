@@ -148,48 +148,12 @@ def GRUD(num_units, num_layers, inputs_dict, input_means_dict,
             'keep_prob': keep_prob,
             'flat_labels': flat_labels}
 
-# Calculate AUC with prediction
-import sklearn.metrics.ranking
-
-def ventilation_risk_score(inputs_dict, outputs_dict, hours_before):
-    def _ventilation_risk_score(vent_ends, labels, predictions):
-        assert len(predictions.shape) == 1
-        assert len(vent_ends.shape) == 1
-        assert labels.shape == vent_ends.shape
-
-        _hours_before = hours_before[:] # copy
-        _hours_before.sort(reverse=True)
-
-        d = dict((h, ([], [])) for h in _hours_before)
-
-        prev_ve = 0
-        for label, vent_end in zip(labels, vent_ends):
-            for h in _hours_before:
-                if vent_end-h > prev_ve:
-                    l1, l2 = d[h]
-                    l1.append(predictions[prev_ve:vent_end-h].max())
-                    l2.append(label)
-            prev_ve = vent_end
-
-        def _binary_auc_tpr_ppv(y_true, y_score, sample_weight=None):
-            if len(y_true) <= 1:
-                return np.nan
-            tps, fps, thresholds = \
-                sklearn.metrics.ranking._binary_clf_curve(
-                    y_true, y_score, sample_weight=sample_weight)
-            tpr = tps / sum(y_true)
-            ppv = tps / (tps + fps)
-            print("shapes:", tpr.shape, ppv.shape)
-            return sklearn.metrics.ranking.auc(tpr, ppv, reorder=True)
-
-        for hour, (predictions, labels) in d.items():
-            d[hour] = _binary_auc_tpr_ppv(labels, predictions)
-        return list(d[h] for h in hours_before)
-
-
-    with tf.variable_scope("tpr_ppv"):
+def ventilation_risk_score_raw(inputs_dict, outputs_dict):
+    with tf.variable_scope("risk_score_raw"):
         ventilation_mask = tf.sequence_mask(
             inputs_dict['n_ventilations'], tf.shape(inputs_dict['ventilation_ends'])[1])
+        tf.assert_non_negative(inputs_dict['ventilation_ends'])
+        tf.assert_non_negative(inputs_dict['length'])
         ventilation_ends_for_flat_labels = \
             inputs_dict['ventilation_ends'] + tf.expand_dims(
                 tf.cumsum(inputs_dict['length'], exclusive=True), 1)
@@ -198,8 +162,38 @@ def ventilation_risk_score(inputs_dict, outputs_dict, hours_before):
 
         labels = tf.gather(outputs_dict['flat_labels'], flat_ventilation_ends)
 
-        return [flat_ventilation_ends+1, labels, outputs_dict['flat_risk_score']], _ventilation_risk_score #tf.py_func(
-            #_ventilation_risk_score,
-            #,
-            #Tout=[tf.float32]*len(hours_before),
-            #stateful=False)
+        return [flat_ventilation_ends+1, labels, outputs_dict['flat_risk_score']]
+
+def ventilation_risk_score(vent_ends, labels, predictions, hours_before):
+    assert hours_before == sorted(hours_before, reverse=True), \
+            "hours_before must be in descending order"
+
+    assert len(predictions.shape) == 1
+    assert len(vent_ends.shape) == 1
+    assert labels.shape == vent_ends.shape
+
+    d = dict((h, ([], [])) for h in hours_before)
+
+    prev_ve = 0
+    for label, vent_end in zip(labels, vent_ends):
+        for h in hours_before:
+            if vent_end-h > prev_ve:
+                y_true, y_score = d[h]
+                y_true.append(label)
+                y_score.append(predictions[prev_ve:vent_end-h].max())
+        prev_ve = vent_end
+
+    return d
+
+import sklearn.metrics.ranking
+
+def binary_auc_tpr_ppv(y_true, y_score, sample_weight=None):
+    "Calculates TPR/PPV AUC given true y and prediction scores"
+    if len(y_true) <= 1:
+        return np.nan
+    fps, tps, thresholds = \
+        sklearn.metrics.ranking._binary_clf_curve(
+            y_true, y_score, sample_weight=sample_weight)
+    tpr = tps / tps[-1]
+    ppv = tps / (tps + fps)
+    return sklearn.metrics.ranking.auc(tpr, ppv)
