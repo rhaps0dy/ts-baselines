@@ -46,7 +46,7 @@ def main(_):
     if FLAGS.command == 'validate':
         assert FLAGS.load_file, "Must indicate a file to load"
         assert os.path.isfile(FLAGS.load_file+'.index')
-        assert os.path.dirname(FLAGS.load_file) == FLAGS.log_dir, \
+        assert os.path.dirname(FLAGS.load_file) == FLAGS.log_dir.rstrip("/"), \
             "File to load must be in log_dir"
         assert FLAGS.num_epochs == 1, "We only want to go through the sets once"
         shuffle = False
@@ -84,9 +84,9 @@ def main(_):
         with tf.variable_scope('metrics'):
             rs_raw = model.ventilation_risk_score_raw(training, m)
             v_rs_raw = model.ventilation_risk_score_raw(validation, v_m)
-            tpr_ppv_ph, tpr_ppv_summary = \
+            tpr_ppv_ph_d, tpr_ppv_summary = \
                build_validation_summaries(hours_before, 'tpr_ppv')
-            roc_ph, roc_summary = \
+            roc_ph_d, roc_summary = \
                build_validation_summaries(hours_before, 'roc')
 
     global_step = tf.train.get_or_create_global_step()
@@ -170,10 +170,10 @@ def main(_):
             feed_dict = {}
             for name in labels_preds:
                 assert len(hours_before) == len(labels_preds[name])
-                assert len(hours_before) == len(roc_ph[name])
-                assert len(hours_before) == len(tpr_ppv_ph[name])
+                assert len(hours_before) == len(roc_ph_d[name])
+                assert len(hours_before) == len(tpr_ppv_ph_d[name])
                 for hour, tpr_ppv_ph, roc_ph, lps in zip(hours_before,
-                        tpr_ppv_ph[name], roc_ph[name],labels_preds[name]):
+                        tpr_ppv_ph_d[name], roc_ph_d[name], labels_preds[name]):
                     if len(list(filter(lambda i: i>0.1, lps[0]))) == 0:
                         import pdb
                         pdb.set_trace()

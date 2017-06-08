@@ -20,6 +20,7 @@ def rename(directory):
     with tf.Session() as sess:
         for checkpoint in checkpoints:
             a_new_name = False
+            names = set()
             for var_name, _ in tf.contrib.framework.list_variables(checkpoint):
                 # Load the variable
                 var = tf.contrib.framework.load_variable(checkpoint, var_name)
@@ -31,6 +32,14 @@ def rename(directory):
                     #print(var_name, 'will be renamed to', new_name)
                     var = tf.Variable(var, name=new_name)
                     a_new_name = True
+                names.add(new_name)
+
+            if 'global_step' not in names:
+                print("Creating global_step")
+                var = tf.Variable(int(checkpoint[checkpoint.find('-')+1:]),
+                        dtype=tf.int64,
+                        name='global_step')
+                a_new_name = True
 
             if a_new_name:
                 print("Doing file", checkpoint)
