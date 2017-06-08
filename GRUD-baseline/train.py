@@ -3,7 +3,10 @@ import pickle_utils as pu
 import itertools as it
 import numpy as np
 import os.path
+import os
+import sys
 import sklearn.metrics
+import subprocess
 
 from read_tfrecords import build_input_machinery
 import model
@@ -40,6 +43,28 @@ def build_validation_summaries(hours_before, metric):
                 summaries_ph[name].append(ph)
     validation_summary = tf.summary.merge(summaries)
     return summaries_ph, validation_summary
+
+def validate_checkpoint(persist):
+    if 'latest_ckpt' not in persist:
+        persist['latest_ckpt'] = None
+        persist['running_procs'] = []
+    latest_ckpt = tf.train.latest_checkpoint(FLAGS.log_dir)
+    if latest_ckpt is None or latest_ckpt == persist['latest_ckpt']:
+        return
+    persist['latest_ckpt'] = latest_ckpt
+    args = ["python", sys.argv[0], "--command=validate", "--num_epochs=1",
+            "--batch_size=256"]
+    args.append("--load_file={:s}".format(latest_ckpt))
+    for f in ['log_dir', 'hidden_units', 'hidden_layers', 'dropout',
+            'layer_norm', 'model']:
+        args.append("--{:s}={}".format(f, getattr(FLAGS, f)))
+
+    for proc in persist['running_procs'][:]:
+        if proc.poll() is not None:
+            persist['running_procs'].remove(proc)
+            print("An earlier subprocess terminated")
+    print("Calling subprocess", args)
+    persist['running_procs'].append(subprocess.Popen(args))
 
 def main(_):
     shuffle = True
@@ -98,12 +123,7 @@ def main(_):
         loss_ph = tf.placeholder(shape=[], dtype=tf.float32)
         training_summary = tf.summary.scalar('training/loss', loss_ph)
 
-
     if FLAGS.command == 'train':
-        # Save invocation flags to log_dir
-        with open(os.path.join(FLAGS.log_dir, 'flags.txt'), 'w') as f:
-            f.write(repr(FLAGS.__flags)+'\n')
-
         sv = tf.train.Supervisor(is_chief=True,
                                 logdir=FLAGS.log_dir,
                                 summary_op=None,
@@ -111,11 +131,17 @@ def main(_):
                                 global_step=global_step,
                                 save_model_secs=600)
 
+        # Save invocation flags to log_dir
+        with open(os.path.join(FLAGS.log_dir, 'flags.txt'), 'w') as f:
+            f.write(repr(FLAGS.__flags)+'\n')
+
         normal_ops = [train_op, m['loss']]
         summary_ops = [train_op, m['loss'], training_summary]
         d = {m['keep_prob']: FLAGS.dropout, loss_ph: 0.0}
 
+        validate_checkpoint_persist = {}
         with sv.managed_session() as sess:
+            sv.loop(300, validate_checkpoint, args=(validate_checkpoint_persist,))
             sess.run(tf.get_collection('make_embeddings_nan'))
             for step in it.count(1):
                 if sv.should_stop():
@@ -147,7 +173,7 @@ def main(_):
 
             def extend_labels_preds(tensors, name):
                 try:
-                    for step in it.count(1):
+                    for step in range(5):
                         if coord.should_stop():
                             break
                         results = sess.run(tensors, d)
