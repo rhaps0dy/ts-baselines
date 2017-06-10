@@ -168,6 +168,7 @@ def clean(mimic, i, numerical_headers, categorical_headers, treatments_headers,
             numerical_ts_dt = np.zeros([len(numerical_headers)], dtype=np.float32) + 1000
             numerical_arr = df[numerical_headers].values
 
+            # categorical_ts starts with being all -1
             categorical_ts = -np.ones([ts_len, len(categorical_headers)], dtype=np.int8)
             categorical_ts_dt = np.zeros([len(categorical_headers)], dtype=np.float32) + 1000
             categorical_df = df[categorical_headers]
@@ -180,15 +181,17 @@ def clean(mimic, i, numerical_headers, categorical_headers, treatments_headers,
             i=0
             while i < len(hours) and hours[i] < ts_len:
                 overwrite = ~np.isnan(numerical_arr[i])
+                cdu = categorical_df_usable[i]
                 if hours[i] <= 0:
+                    # make it positive, hours[i] should contain non-positive values
                     numerical_ts_dt[overwrite] = -hours[i]
-                    categorical_ts_dt[categorical_df_usable[i]] = -hours[i]
-
-                if hours[i] >= 0:
+                    categorical_ts_dt[cdu] = -hours[i]
+                else:
                     treatments_ts[hours[i]] = treatments_df[i]
-                    categorical_ts[hours[i], categorical_df_usable[i]] = \
-                        categorical_df.iloc[i, categorical_df_usable[i]].apply(int).values
-                    numerical_ts[0, overwrite] = numerical_arr[i, overwrite]
+
+                numerical_ts[max(0, hours[i]), overwrite] = numerical_arr[i, overwrite]
+                categorical_ts[max(0, hours[i]), cdu] = (
+                    categorical_df.iloc[i, cdu].apply(int).values)
 
                 i += 1
 
@@ -196,7 +199,6 @@ def clean(mimic, i, numerical_headers, categorical_headers, treatments_headers,
             assert len(numerical_static.shape) == 1
             categorical_static = static_data_categorical.loc[icustay_id].values
             assert len(categorical_static.shape) == 1
-
 
             example = tf.train.SequenceExample()
             def context(key, dtype, iterable):
