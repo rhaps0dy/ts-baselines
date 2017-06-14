@@ -14,7 +14,7 @@ import model
 flags = tf.app.flags
 flags.DEFINE_string('command', 'train', 'What to do [train, validate, profile_training]')
 flags.DEFINE_string('load_file', '', 'What file to load for validating?')
-flags.DEFINE_string('log_dir', './logs/', 'Base directory for logs')
+flags.DEFINE_string('log_dir', None, 'Base directory for logs')
 flags.DEFINE_integer('min_after_dequeue', 5000,
                      'Minimum number of examples to draw from in the RandomShuffleQueue')
 flags.DEFINE_integer('n_queue_threads', 2, 'number of queue threads')
