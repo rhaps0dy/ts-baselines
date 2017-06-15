@@ -1,1 +1,5 @@
 dataset.tar.gz
+logs/
+dataset/
+interpolation/
+FILENAMES*

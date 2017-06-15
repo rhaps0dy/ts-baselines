@@ -251,7 +251,8 @@ if __name__ == '__main__':
         records = list(it.chain(
             *(tf.python_io.tf_record_iterator('hv_{:d}.tfrecords'.format(i))
                  for i in range(N_PROCESSORS))))
-        os.mkdir('dataset')
+        if not os.path.isdir('dataset'):
+            os.mkdir('dataset')
         def write(data, fname):
             p = os.path.join('dataset', fname)
             with tf.python_io.TFRecordWriter(p) as f:
