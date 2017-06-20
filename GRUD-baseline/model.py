@@ -6,6 +6,7 @@ from slugify import slugify
 import collections
 
 from tensorflow.python.util import nest
+from bb_alpha_inputs import add_variable_scope
 
 def _make_embedding(_name, n_cats, index):
     name = slugify(_name, separator='_')

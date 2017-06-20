@@ -2,8 +2,7 @@ import tensorflow as tf
 import pickle_utils as pu
 import itertools as it
 
-def read_and_decode(filename_queue):
-    f_num = pu.load('dataset/feature_numbers.pkl.gz')
+def read_and_decode(filename_queue, f_num):
     reader = tf.TFRecordReader()
     _, serialized_example = reader.read(filename_queue)
     context, sequence = tf.parse_single_sequence_example(
@@ -40,11 +39,11 @@ def read_and_decode(filename_queue):
         lambda e: (e[0], tf.cast(e[1], convert[e[0]])) if e[0] in convert else e,
         it.chain(context.items(), sequence.items(), additional_items)))
 
-def build_input_machinery(filenames, do_shuffle, num_epochs, batch_size,
-        min_after_dequeue, n_queue_threads):
+def build_input_machinery(filenames, feature_numbers, do_shuffle, num_epochs,
+        batch_size, min_after_dequeue, n_queue_threads):
     filename_queue = tf.train.string_input_producer(filenames,
                                                     num_epochs=num_epochs)
-    d = read_and_decode(filename_queue)
+    d = read_and_decode(filename_queue, feature_numbers)
     d_keys, d_items = zip(*d.items())
 
     dtypes = list(a.dtype for a in d_items)

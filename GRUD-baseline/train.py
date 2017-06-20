@@ -9,6 +9,7 @@ import sklearn.metrics
 import subprocess
 
 from read_tfrecords import build_input_machinery
+from bb_alpha_inputs import build_sampler
 import model
 
 flags = tf.app.flags
@@ -26,6 +27,9 @@ flags.DEFINE_float('learning_rate', 0.001, 'learning rate for ADAM')
 flags.DEFINE_float('dropout', 0.5, 'probability of keeping a neuron on')
 flags.DEFINE_boolean('layer_norm', True, 'Whether to use Layer Normalisation')
 flags.DEFINE_string('model', 'GRUD', 'the model to use')
+flags.DEFINE_string('dataset', '../clean_ventilation/dataset', 'Dataset folder')
+flags.DEFINE_string('interpolation', '../clean_ventilation/interpolation',
+                    'Interpolation data/trained model folder')
 del flags
 FLAGS = tf.app.flags.FLAGS
 
@@ -68,6 +72,7 @@ def validate_checkpoint(persist):
 
 def main(_):
     shuffle = True
+    feature_numbers = pu.load(os.path.join(FLAGS.dataset, 'feature_numbers.pkl.gz'))
     if FLAGS.command == 'validate':
         assert FLAGS.load_file, "Must indicate a file to load"
         assert os.path.isfile(FLAGS.load_file+'.index')
@@ -76,17 +81,31 @@ def main(_):
         assert FLAGS.num_epochs == 1, "We only want to go through the sets once"
         shuffle = False
         validation = build_input_machinery(["dataset/validation_0.tfrecords"],
-            False, FLAGS.num_epochs, FLAGS.batch_size, FLAGS.min_after_dequeue,
-            FLAGS.n_queue_threads)
+                                           feature_numbers, False,
+                                           FLAGS.num_epochs, FLAGS.batch_size,
+                                           FLAGS.min_after_dequeue,
+                                           FLAGS.n_queue_threads)
 
     training = build_input_machinery(["dataset/train_0.tfrecords"], shuffle,
-        FLAGS.num_epochs, FLAGS.batch_size, FLAGS.min_after_dequeue,
-        FLAGS.n_queue_threads)
+                                     feature_numbers, FLAGS.num_epochs,
+                                     FLAGS.batch_size, FLAGS.min_after_dequeue,
+                                     FLAGS.n_queue_threads)
 
-    input_means = pu.load('dataset/means.pkl.gz')
-    number_of_categories = pu.load('dataset/number_of_categories.pkl.gz')
-    _, _, numerical_headers, categorical_headers, treatments_headers = \
-        pu.load('dataset/small.pkl.gz')
+    def ds_load(f, flag='dataset'):
+        total_num_features = (feature_numbers['numerical_ts'] +
+                              feature_numbers['categorical_ts'])
+        d = getattr(FLAGS, flag)
+        return pu.load(os.path.join(d, f.format(total_num_features)))
+    input_means = ds_load('means_{:d}.pkl.gz', 'interpolation')
+    # The number of categories is computed from _all_ the data set, since we
+    # need to build our model to fit enough of them in its arrays. However it
+    # is _not overfitting_, even if one of the categories does not appear in
+    # the training set. If that is the case, we will never train that
+    # category's embeddings although we do know it exists.
+    number_of_categories = ds_load('number_of_categories_{:d}.pkl.gz')
+    _, _, _, numerical_headers, categorical_headers, treatments_headers = \
+        ds_load('headers_{:d}.pkl.gz')
+    del _
 
     def build_model(inputs, reuse=None):
         Model = getattr(model, FLAGS.model)
