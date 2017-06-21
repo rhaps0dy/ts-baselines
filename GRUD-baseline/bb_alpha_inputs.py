@@ -221,6 +221,9 @@ def build_input_machinery(dataset):
 
 
 def main(_):
+    config = tf.ConfigProto()
+    #config.gpu_options.per_process_gpu_memory_fraction = 0.4
+    config.gpu_options.allow_growth = True
     dataset = os.path.join(FLAGS.interpolation,
                            'num_{:d}.pkl.gz'.format(FLAGS.feature_i))
     log_dir = os.path.join(FLAGS.interpolation,
@@ -244,7 +247,7 @@ def main(_):
     train_op = (tf.train.AdamOptimizer(learning_rate=FLAGS.learning_rate)
                 .minimize(m['energy'], global_step=global_step))
     saver = tf.train.Saver(max_to_keep=0)
-    with tf.Session() as sess:
+    with tf.Session(config=config) as sess:
         sess.run(tf.global_variables_initializer())
         writer = tf.summary.FileWriter(log_dir, sess.graph)
         slice_start = 0

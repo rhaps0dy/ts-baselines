@@ -121,11 +121,11 @@ def main(_):
                 print("step", i, ll, ", scale =", s)
                 if ll > prev_ll:
                     times_waiting = 0
+                    prev_ll = ll
                 else:
                     times_waiting += 1
                     if times_waiting > FLAGS.patience:
                         break
-                prev_ll = ll
         s = sess.run(scale)
         print("Final scale:", s)
         pu.dump(s, scale_fname)
