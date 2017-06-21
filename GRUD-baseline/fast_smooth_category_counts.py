@@ -1,7 +1,7 @@
 import pickle_utils as pu
 import numpy as np
-import tensorflow as tf
 import os
+import tensorflow as tf
 
 if __name__ == '__main__':
     flags = tf.app.flags
@@ -14,8 +14,7 @@ if __name__ == '__main__':
     del flags
     FLAGS = tf.app.flags.FLAGS
 
-#@pu.memoize("{0:s}/training_test_{proportion:}.pkl.gz")
-def make_training_test(log_dir, counts, proportion):
+def make_training_test(counts, proportion):
     counts_ = np.reshape(counts, [-1])
     total_examples = np.sum(counts_)
     counts_ = counts_ / total_examples
@@ -27,7 +26,7 @@ def make_training_test(log_dir, counts, proportion):
     test_set += np.clip(training_set, -1000000000, 0)
     training_set = counts.astype(np.int) - test_set
     assert np.all(training_set >= 0)
-    return (test_set, training_set)
+    return training_set, test_set
 
 def training_model(training_set, test_set, total_counts, len_t, N_cats):
     # Prepare compact training and test sets
@@ -51,16 +50,27 @@ def training_model(training_set, test_set, total_counts, len_t, N_cats):
     compact_training = np.transpose(compact_training, [0,2,1])
     compact_test = np.transpose(test_set[:,:,test_time_filter], [0,2,1])
 
+    # Take only the categories that have at least 1 example
+    cat_f = (np_smoothing.flatten() > 0)
+    cat_f_mult = np.tile(cat_f, [FLAGS.num_set_draws])
+    unzero_training = compact_training.astype(np.float32)[cat_f_mult,:,:][:,:,cat_f]
+    unzero_test = compact_test.astype(np.float32)[cat_f_mult,:][:,:,cat_f]
+    smoothing = np_smoothing.astype(np.float32)[:,:,cat_f]
+
     # Create tensorflow variables and operations
     scale = tf.get_variable("scale", shape=[], dtype=tf.float32,
                             trainable=True,
                             initializer=tf.constant_initializer(1))
     m1 = tf.exp(filter_matrix*scale)
-    m1 = tf.tile(tf.expand_dims(m1, 0), [compact_training.shape[0], 1, 1])
-    n = (tf.matmul(m1, compact_training.astype(np.float32)) +
-         np_smoothing.astype(np.float32))
+    m1 = tf.tile(tf.expand_dims(m1, 0), [unzero_training.shape[0], 1, 1])
+    print(m1.get_shape())
+    print(unzero_training.shape)
+    n = tf.matmul(m1, unzero_training) + smoothing
+    print(n.get_shape())
     p = n/tf.reduce_sum(n, axis=2, keep_dims=True)
-    tf_ll = tf.reduce_sum(compact_test*tf.log(p))
+    print(p.get_shape())
+    print(unzero_test.shape)
+    tf_ll = tf.reduce_sum(unzero_test*tf.log(p))
     return tf_ll, scale
 
 def main(_):
@@ -78,12 +88,13 @@ def main(_):
         FLAGS.interpolation, 'counts_cat_{:d}.pkl.gz'.format(FLAGS.feature_i)))
 
     len_t = max(t for _, t in X)+1
-    N_cats = max(map(lambda x: x[0], X))+1
+    print("len_t", len_t)
+    N_cats = len(total_counts)
     counts = np.zeros([N_cats, N_cats, len_t], dtype=np.float)
 
     for (cat, t), c in zip(X, y):
         counts[cat,c,t] += 1
-    l = [make_training_test(log_dir, counts, proportion=0.3)
+    l = [make_training_test(counts, proportion=0.3)
          for _ in range(FLAGS.num_set_draws)]
     training_set, test_set = zip(*l)
     del l
