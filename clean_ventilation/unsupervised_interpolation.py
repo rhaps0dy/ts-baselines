@@ -58,7 +58,8 @@ def main(_):
                 numerical_ts, categorical_ts, length = sess.run(list(map(
                     dataset.__getitem__, ['numerical_ts', 'categorical_ts', 'length'])))
                 for feature_i in range(cat_shape[1]):
-                    category_counts[feature_i].update(categorical_ts[:,:,feature_i].flatten())
+                    for j, l in enumerate(length):
+                        category_counts[feature_i].update(categorical_ts[j,:l,feature_i].flatten())
 
                 progress_bar.update(n=numerical_ts.shape[0])
                 if numerical_ts.shape[0] < num_shape[0]:
@@ -121,11 +122,10 @@ def main(_):
         nums_cats = pu.load('dataset/number_of_categories_200.pkl.gz')['categorical_ts']
         for i, (count, n_cats) in enumerate(zip(category_counts, nums_cats)):
             a = np.zeros(n_cats, dtype=np.int)
-            try:
-                for cat, n in count.items():
-                    a[cat] = n
-            except IndexError:
-                print("Index error on", i, count)
+            print("Category", i, "counts", count)
+            for j in range(n_cats):
+                if j in count:
+                    a[j] = count[j]
             pu.dump(a, 'interpolation/counts_cat_{:d}.pkl.gz'.format(i))
         pu.dump((numerical_averages, numerical_averages_counts_2), 'dataset/means.pkl.gz')
         assert np.all(numerical_averages_counts_2 == numerical_averages_counts)
