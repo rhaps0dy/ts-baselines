@@ -14,5 +14,5 @@ for i in 0 1 2 3 4 5 6 7; do
 done
 wait
 
-python to_tfrecords.py join_tfrecords_training_test_vali
+python to_tfrecords.py join_tfrecords_training_test_vali 1
 

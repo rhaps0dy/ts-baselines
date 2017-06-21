@@ -3,9 +3,12 @@ import pickle_utils as pu
 import itertools as it
 import numpy as np
 import collections
-import os.path
+import os
 import sys
+from tqdm import tqdm
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                                '..', 'GRUD-baseline'))
 from read_tfrecords import build_input_machinery
 
 flags = tf.app.flags
@@ -16,7 +19,15 @@ BATCH_SIZE = 64
 
 def main(_):
     assert os.path.exists(FLAGS.dataset)
-    dataset = build_input_machinery([FLAGS.dataset], False, 1, BATCH_SIZE, None, 1)
+
+    if not os.path.exists('interpolation'):
+        os.mkdir('interpolation')
+    print("Will write files to ./interpolation")
+
+    feature_numbers = pu.load(os.path.join(
+        os.path.dirname(FLAGS.dataset), 'feature_numbers.pkl.gz'))
+    dataset = build_input_machinery([FLAGS.dataset], feature_numbers, False, 1,
+                                    BATCH_SIZE, None, 1)
 
     num_shape = [BATCH_SIZE, int(dataset['numerical_ts'].get_shape()[2])]
     last_num_ts = np.empty(num_shape, dtype=np.float32)
@@ -32,22 +43,24 @@ def main(_):
     cat_interpolate_y = list([] for _ in range(cat_shape[1]))
 
     category_counts = list(collections.Counter() for _ in range(cat_shape[1]))
+    numerical_averages = np.zeros(num_shape[1], dtype=np.float32)
+    numerical_averages_counts = np.zeros(num_shape[1], dtype=np.int)
+    numerical_averages_counts_2 = np.zeros(num_shape[1], dtype=np.int)
 
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
         sess.run(tf.local_variables_initializer())
         coord = tf.train.Coordinator()
         queue_threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+        progress_bar = tqdm()
         try:
-            n_processed = 0
             while not coord.should_stop():
                 numerical_ts, categorical_ts, length = sess.run(list(map(
                     dataset.__getitem__, ['numerical_ts', 'categorical_ts', 'length'])))
                 for feature_i in range(cat_shape[1]):
                     category_counts[feature_i].update(categorical_ts[:,:,feature_i].flatten())
-                continue
 
-                n_processed += numerical_ts.shape[0]
+                progress_bar.update(n=numerical_ts.shape[0])
                 if numerical_ts.shape[0] < num_shape[0]:
                     # Pad so that the first dimension is always BATCH_SIZE
                     numerical_ts = np.pad(
@@ -81,6 +94,9 @@ def main(_):
                         if not np.isnan(n):
                             num_interpolate_X[f].append((n, num_ts_dt[ex,f]))
                             num_interpolate_y[f].append((num_ts[ex,f]))
+                        numerical_averages[f] += num_ts[ex,f]
+                        numerical_averages_counts_2[f] += 1
+                    numerical_averages_counts += np.sum(num_is_valid, axis=0)
 
                     cat_is_valid = is_in_range * (cat_ts >= 0)
                     for ex, f in zip(*cat_is_valid.nonzero()):
@@ -95,7 +111,6 @@ def main(_):
                     cat_ts_dt += 1
                     cat_ts_dt[cat_is_valid] = 0
                     last_cat_ts[cat_is_valid] = cat_ts[cat_is_valid]
-                print("Processed {:d} examples".format(n_processed))
         except tf.errors.OutOfRangeError:
             pass
 
@@ -103,15 +118,17 @@ def main(_):
         #    pu.dump((niX, niY), 'interpolation/num_{:d}.pkl.gz'.format(i))
         #for i, ciX, ciY in zip(it.count(0), cat_interpolate_X, cat_interpolate_y):
         #    pu.dump((ciX, ciY), 'interpolation/cat_{:d}.pkl.gz'.format(i))
-        for i, count in enumerate(category_counts):
-            a = np.zeros([len(count)], dtype=np.int)
+        nums_cats = pu.load('dataset/number_of_categories_200.pkl.gz')['categorical_ts']
+        for i, (count, n_cats) in enumerate(zip(category_counts, nums_cats)):
+            a = np.zeros(n_cats, dtype=np.int)
             try:
                 for cat, n in count.items():
                     a[cat] = n
             except IndexError:
                 print("Index error on", i, count)
-                sys.exit(1)
             pu.dump(a, 'interpolation/counts_cat_{:d}.pkl.gz'.format(i))
+        pu.dump((numerical_averages, numerical_averages_counts_2), 'dataset/means.pkl.gz')
+        assert np.all(numerical_averages_counts_2 == numerical_averages_counts)
 
         coord.request_stop()
         coord.join(queue_threads)

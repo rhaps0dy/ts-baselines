@@ -3,3 +3,5 @@ logs/
 dataset/
 interpolation/
 FILENAMES*
+dataset-old
+interpolation-old

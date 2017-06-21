@@ -118,14 +118,7 @@ def _bytes_feature(values):
 def _float_feature(values):
   return tf.train.Feature(float_list=tf.train.FloatList(value=values))
 
-#@pu.memoize('dataset/means.pkl.gz', log_level='warn')
-#def compute_means(df, numerical_headers, categorical_headers):
-#    numerical_ts_means = df[numerical_headers].mean(axis=0).values
-#    categorical_ts_modes = (df[categorical_headers].mode(axis=0)
-#                            .iloc[0].apply(int).values)
-#    return {'numerical_ts': numerical_ts_means,
-#            'categorical_ts': categorical_ts_modes}
-
+@pu.memoize('cache/_split_dataframe_{0:d}_idempotent.pkl')
 def split_dataframe(n_frequent):
     usecols, dtype, fillna, numerical_headers, categorical_headers, treatments_headers = \
         get_frequent_headers(n_frequent=n_frequent)
@@ -152,7 +145,7 @@ def split_dataframe(n_frequent):
 
 def write_tfrecords(mimic, i, numerical_headers, categorical_headers, treatments_headers,
           static_data_numerical, static_data_categorical):
-    with tf.python_io.TFRecordWriter("hv_{:d}.tfrecords".format(i)) as writer:
+    with tf.python_io.TFRecordWriter("cache/hv_{:d}.tfrecords".format(i)) as writer:
         n_examples = 0
         for icustay_id, df in mimic.groupby(level=0):
             print("Doing icustay_id", icustay_id, "...")
@@ -257,10 +250,10 @@ def compute_number_of_categories(n_frequent):
         (static_data_categorical.max(axis=0).values+1).tolist())
     return out
 
-@pu.memoize('dataset/_training_split_guard_{0:d}.pkl', log_level='warn')
+@pu.memoize('cache/_training_split_idempotent_{0:d}.pkl', log_level='warn')
 def join_tfrecords_training_test_vali(n_output_folds):
     records = list(it.chain(
-        *(tf.python_io.tf_record_iterator('hv_{:d}.tfrecords'.format(i))
+        *(tf.python_io.tf_record_iterator('cache/hv_{:d}.tfrecords'.format(i))
                 for i in range(N_PROCESSORS))))
     if not os.path.isdir('dataset'):
         os.mkdir('dataset')
@@ -295,7 +288,9 @@ if __name__ == '__main__':
     if sys.argv[1] == 'number_of_categories':
         compute_number_of_categories(int(sys.argv[2]))
     elif sys.argv[1] == 'join_tfrecords_training_test_vali':
-        join_tfrecords_training_test_vali()
+        join_tfrecords_training_test_vali(int(sys.argv[2]))
+    elif sys.argv[1] == 'split_dataframe':
+        split_dataframe(int(sys.argv[2]))
     elif sys.argv[1] == 'write_tfrecords':
         _, _, _, numerical_headers, categorical_headers, treatments_headers = \
             get_frequent_headers(n_frequent=int(sys.argv[2]))
@@ -305,3 +300,5 @@ if __name__ == '__main__':
         static_data_numerical, static_data_categorical = get_static_data()
         write_tfrecords(mimic, i, numerical_headers, categorical_headers, treatments_headers,
             static_data_numerical, static_data_categorical)
+    else:
+        raise ValueError(sys.argv[1])

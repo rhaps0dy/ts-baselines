@@ -13,6 +13,7 @@ if __name__ == '__main__':
     flags.DEFINE_float('learning_rate', 0.001, 'learning rate for ADAM')
     flags.DEFINE_integer('feature_i', None, 'Feature to learn')
     flags.DEFINE_string('layer_sizes', '[64]', 'layer sizes')
+    flags.DEFINE_string('interpolation', None, 'Location of interpolation folder')
     flags.DEFINE_integer('patience', 20, 'Number of epochs to wait if'
                          'validation log-likelihood does not increase')
     del flags
@@ -178,7 +179,8 @@ def model(inputs, labels, N, num_samples, layer_sizes, alpha=0.5,
     return results
 
 def build_sampler(inputs, feature_i, num_samples=8, layer_sizes=[64]):
-    log_dir = 'interpolation/trained/num_{:d}'.format(feature_i)
+    log_dir = os.path.join(FLAGS.interpolation,
+                           'trained/num_{:d}'.format(feature_i))
     mX, sX, my, sy, N = pu.load(
         os.path.join(log_dir, 'means.pkl.gz'))
     m = model(inputs, None, N, num_samples, layer_sizes, trainable=False,
@@ -219,8 +221,10 @@ def build_input_machinery(dataset):
 
 
 def main(_):
-    dataset = 'interpolation/num_{:d}.pkl.gz'.format(FLAGS.feature_i)
-    log_dir = 'interpolation/trained/num_{:d}'.format(FLAGS.feature_i)
+    dataset = os.path.join(FLAGS.interpolation,
+                           'num_{:d}.pkl.gz'.format(FLAGS.feature_i))
+    log_dir = os.path.join(FLAGS.interpolation,
+                           'trained/num_{:d}'.format(FLAGS.feature_i))
     if not os.path.isdir(log_dir):
         os.mkdir(log_dir)
     ckpt_fname = os.path.join(log_dir, 'ckpt')
