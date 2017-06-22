@@ -7,6 +7,7 @@ import os
 import sys
 import sklearn.metrics
 import subprocess
+from tqdm import tqdm
 
 from read_tfrecords import build_input_machinery
 from bb_alpha_inputs import build_sampler
@@ -73,6 +74,7 @@ def validate_checkpoint(persist):
     persist['running_procs'].append(subprocess.Popen(args))
 
 def main(_):
+    assert FLAGS.log_dir is not None
     shuffle = True
     feature_numbers = pu.load(os.path.join(FLAGS.dataset, 'feature_numbers.pkl.gz'))
     print(feature_numbers)
@@ -152,6 +154,21 @@ def main(_):
         training_summary = tf.summary.scalar('training/loss', loss_ph)
 
     if FLAGS.command == 'train':
+        def load_num_model(i):
+            num_dir = os.path.join(FLAGS.interpolation, 'trained',
+                                    'num_{:d}'.format(i))
+            num_ckpt = pu.load(os.path.join(num_dir, 'validated_best.pkl'))
+            ckpt_fname = os.path.join(num_dir, 'new-ckpt-{:d}'.format(num_ckpt))
+            saver_l = []
+            with tf.variable_scope("", reuse=True):
+                for var_name, _ in tf.contrib.framework.list_variables(ckpt_fname):
+                    saver_l.append(tf.get_variable(var_name))
+            _saver = tf.train.Saver(saver_l)
+            return (_saver, ckpt_fname)
+
+        num_savers = list(map(load_num_model,
+                              range(feature_numbers['numerical_ts'])))
+
         sv = tf.train.Supervisor(is_chief=True,
                                 logdir=FLAGS.log_dir,
                                 summary_op=None,
@@ -171,7 +188,10 @@ def main(_):
         with sv.managed_session() as sess:
             sv.loop(300, validate_checkpoint, args=(validate_checkpoint_persist,))
             sess.run(tf.get_collection('make_embeddings_nan'))
-            for step in it.count(1):
+            for _saver, ckpt_fname in num_savers:
+                _saver.restore(sess, ckpt_fname)
+
+            for step in tqdm(it.count(1)):
                 if sv.should_stop():
                     break
                 if step % 100 == 0:

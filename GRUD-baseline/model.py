@@ -233,8 +233,9 @@ def _bayes_embedding(_name, n_cats, index, total_counts, interpolation_dir,
         name = 'c_side__rails'
     print(_name, name)
     p, n_dims = create_p(interpolation_dir, total_counts, category_index)
-    with tf.variable_scope(name):
+    with tf.variable_scope('cat_{:d}'.format(category_index)):
         need_to_sample = (index < 0)
+        cur_time = tf.clip_by_value(cur_time, 0, len(p)-1)
         logits = tf.constant(p, name="logits", dtype=tf.float32)
         cur_cat_time = tf.concat([cur_cat, cur_time], axis=1)
         sampled_index = tf.to_int32(tf.multinomial(
@@ -376,12 +377,14 @@ def BayesDropout(num_units, num_layers, inputs_dict, input_means_dict,
     ini_state_flat = []
     for i, sz in enumerate(state_size_flat):
         if i == 1: # Time since last input (categories)
-            ini_state_flat.append(tf.clip_by_value(
-                tf.cast(inputs_dict['categorical_ts_dt'], tf.int32),
-                0, list(pu.load('{0:s}/ps/cat_{1:d}.pkl.gz'
-                                .format(interpolation_dir, n))[0].shape[1]
-                        for n in range(len(
-                                number_of_categories['categorical_ts'])))))
+            #t_lens = []
+            #for n in range(len(number_of_categories['categorical_ts'])):
+            #    arr = pu.load('{0:s}/ps/cat_{1:d}.pkl.gz'
+            #                  .format(interpolation_dir, n))[0]
+            #    print(arr.shape[1], arr.shape[1]-3)
+            #    t_lens.append(arr.shape[1]-3)
+            ini_state_flat.append(
+                tf.cast(inputs_dict['categorical_ts_dt'], tf.int32))
         elif i == 3: # Time since last input (categories)
             ini_state_flat.append(inputs_dict['numerical_ts_dt'])
         else:
