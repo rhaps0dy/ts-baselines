@@ -73,6 +73,32 @@ def training_model(training_set, test_set, total_counts, len_t, N_cats):
     tf_ll = tf.reduce_sum(unzero_test*tf.log(p))
     return tf_ll, scale
 
+def make_smoothed_probability(_cat_samples, total_counts, scale):
+    from scipy.ndimage import convolve1d
+
+    counts = make_counts(_cat_samples, total_counts)
+    N_cats, _, len_t = counts.shape
+    np_filter = np.zeros([len_t*2+1], dtype=np.float32)
+    np_filter[:len_t] = np.arange(len_t, 0, -1)
+    np_filter[len_t+1:] = np.arange(len_t)+1
+    f = np.exp(-scale*np_filter)
+    c = convolve1d(counts, f, axis=-1)
+    np_smoothing = np.reshape(total_counts, [1,N_cats,1])/np.sum(total_counts)
+    p_ = c + np_smoothing
+    p = p_/np.sum(p_, axis=2, keepdims=True)
+    return np.transpose(p, [0,2,1])
+
+
+def make_counts(_cat_samples, total_counts):
+    X, y = _cat_samples
+    len_t = max(t for _, t in X)+1
+    N_cats = len(total_counts)
+    counts = np.zeros([N_cats, N_cats, len_t], dtype=np.float)
+
+    for (cat, t), c in zip(X, y):
+        counts[cat,c,t] += 1
+    return counts
+
 def main(_):
     print("Doing category", FLAGS.feature_i)
     log_dir = os.path.join(FLAGS.interpolation,
@@ -87,13 +113,10 @@ def main(_):
     total_counts = pu.load(os.path.join(
         FLAGS.interpolation, 'counts_cat_{:d}.pkl.gz'.format(FLAGS.feature_i)))
 
-    len_t = max(t for _, t in X)+1
-    print("len_t", len_t)
-    N_cats = len(total_counts)
-    counts = np.zeros([N_cats, N_cats, len_t], dtype=np.float)
+    counts = make_counts(X, total_counts)
+    N_cats = counts.shape[0]
+    len_t = counts.shape[2]
 
-    for (cat, t), c in zip(X, y):
-        counts[cat,c,t] += 1
     l = [make_training_test(counts, proportion=0.3)
          for _ in range(FLAGS.num_set_draws)]
     training_set, test_set = zip(*l)
@@ -121,11 +144,11 @@ def main(_):
                 print("step", i, ll, ", scale =", s)
                 if ll > prev_ll:
                     times_waiting = 0
-                    prev_ll = ll
                 else:
                     times_waiting += 1
                     if times_waiting > FLAGS.patience:
                         break
+                prev_ll = ll
         s = sess.run(scale)
         print("Final scale:", s)
         pu.dump(s, scale_fname)

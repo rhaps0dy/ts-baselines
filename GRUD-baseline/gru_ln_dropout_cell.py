@@ -98,21 +98,38 @@ class LayerNormBasicGRUCell(tf.contrib.rnn.LayerNormBasicLSTMCell):
         return LayerNormDropoutGRUDCell._linear(self, inputs, each_out_size,
                                                 n_outs, name)
 
+    def _next_state(self, inputs, state, apply_dropout):
+        z, r = self._linear([inputs, state], self._num_units, 2, "gates_1")
+        if self._layer_norm:
+            z = self._norm(z, "update")
+            r = self._norm(r, "reset")
+        z = tf.sigmoid(z)
+        r = tf.sigmoid(r)
+        g = self._linear([inputs, r*state],
+                            self._num_units, 1, "gates_2")
+        if self._layer_norm:
+            g = self._norm(g, "pre_state")
+        g = self._activation(g)
+
+        if apply_dropout and ((not isinstance(self._keep_prob, float))
+                              or self._keep_prob < 1):
+            g = tf.nn.dropout(g, self._keep_prob, seed=self._seed)
+        new_state = (1-z)*state + z*g
+
     def __call__(self, inputs, state, scope=None):
         with tf.variable_scope(scope or "layer_norm_basic_gru_cell"):
-            z, r = self._linear([inputs, state], self._num_units, 2, "gates_1")
-            if self._layer_norm:
-                z = self._norm(z, "update")
-                r = self._norm(r, "reset")
-            z = tf.sigmoid(z)
-            r = tf.sigmoid(r)
-            g = self._linear([inputs, r*state],
-                             self._num_units, 1, "gates_2")
-            if self._layer_norm:
-                g = self._norm(g, "pre_state")
-            g = self._activation(g)
-
-            if (not isinstance(self._keep_prob, float)) or self._keep_prob < 1:
-                g = tf.nn.dropout(g, self._keep_prob, seed=self._seed)
-            new_state = (1-z)*state + z*g
+            new_state = self._next_state(inputs, state, True)
         return new_state, new_state
+
+class LayerNormVariationalDropoutGRUCell(LayerNormBasicGRUCell):
+    def __init__(self, num_units, recurrent_dropout, output_dropout, **kwargs):
+        super(LayerNormBasicGRUCell, self).__init__(num_units, **kwargs)
+        assert int(recurrent_dropout.get_shape()[1]) == num_units
+        assert int(output_dropout.get_shape()[1]) == num_units
+
+    def __call__(self, inputs, state, scope=None):
+        with tf.variable_scope(scope or "layer_norm_variational_dropout_gru_cell"):
+            new_state = self._next_state(inputs, state, False)
+            output = new_state*output_dropout
+            memory = new_state*recurrent_dropout
+        return output, memory

@@ -23,6 +23,8 @@ flags.DEFINE_integer('batch_size', 64, 'batch size for training')
 flags.DEFINE_integer('num_epochs', 1000, 'number of training epochs')
 flags.DEFINE_integer('hidden_units', 100, 'Number of hidden units per LSTM layer')
 flags.DEFINE_integer('hidden_layers', 1, 'Number of hidden LSTM layers')
+flags.DEFINE_integer('num_samples', 10,
+                     'Number of samples for the monte-carlo imputation')
 flags.DEFINE_float('learning_rate', 0.001, 'learning rate for ADAM')
 flags.DEFINE_float('dropout', 0.5, 'probability of keeping a neuron on')
 flags.DEFINE_boolean('layer_norm', True, 'Whether to use Layer Normalisation')
@@ -73,6 +75,7 @@ def validate_checkpoint(persist):
 def main(_):
     shuffle = True
     feature_numbers = pu.load(os.path.join(FLAGS.dataset, 'feature_numbers.pkl.gz'))
+    print(feature_numbers)
     if FLAGS.command == 'validate':
         assert FLAGS.load_file, "Must indicate a file to load"
         assert os.path.isfile(FLAGS.load_file+'.index')
@@ -80,15 +83,18 @@ def main(_):
             "File to load must be in log_dir"
         assert FLAGS.num_epochs == 1, "We only want to go through the sets once"
         shuffle = False
-        validation = build_input_machinery(["dataset/validation_0.tfrecords"],
+        validation = build_input_machinery([os.path.join(FLAGS.dataset,
+                                                         "validation_0.tfrecords")],
                                            feature_numbers, False,
                                            FLAGS.num_epochs, FLAGS.batch_size,
                                            FLAGS.min_after_dequeue,
                                            FLAGS.n_queue_threads)
 
-    training = build_input_machinery(["dataset/train_0.tfrecords"], shuffle,
-                                     feature_numbers, FLAGS.num_epochs,
-                                     FLAGS.batch_size, FLAGS.min_after_dequeue,
+    training = build_input_machinery([os.path.join(FLAGS.dataset,
+                                                   "train_0.tfrecords")],
+                                     feature_numbers, shuffle,
+                                     FLAGS.num_epochs, FLAGS.batch_size,
+                                     FLAGS.min_after_dequeue,
                                      FLAGS.n_queue_threads)
 
     def ds_load(f, flag='dataset'):
@@ -96,7 +102,7 @@ def main(_):
                               feature_numbers['categorical_ts'])
         d = getattr(FLAGS, flag)
         return pu.load(os.path.join(d, f.format(total_num_features)))
-    input_means = ds_load('means_{:d}.pkl.gz', 'interpolation')
+    input_means = pu.load(os.path.join(FLAGS.dataset, 'means.pkl.gz'))
     # The number of categories is computed from _all_ the data set, since we
     # need to build our model to fit enough of them in its arrays. However it
     # is _not overfitting_, even if one of the categories does not appear in
@@ -111,13 +117,16 @@ def main(_):
         Model = getattr(model, FLAGS.model)
         with tf.variable_scope(FLAGS.model, reuse=reuse):
             m = Model(num_units=FLAGS.hidden_units,
-                    num_layers=FLAGS.hidden_layers,
-                    inputs_dict=inputs,
-                    input_means_dict=input_means,
-                    number_of_categories=number_of_categories,
-                    categorical_headers=categorical_headers,
-                    default_batch_size=FLAGS.batch_size,
-                    layer_norm=FLAGS.layer_norm)
+                      num_layers=FLAGS.hidden_layers,
+                      inputs_dict=inputs,
+                      input_means_dict=input_means,
+                      number_of_categories=number_of_categories,
+                      categorical_headers=categorical_headers,
+                      numerical_headers=numerical_headers,
+                      default_batch_size=FLAGS.batch_size,
+                      layer_norm=FLAGS.layer_norm,
+                      interpolation_dir=FLAGS.interpolation,
+                      num_samples=FLAGS.num_samples)
             return m
 
     m = build_model(training)
