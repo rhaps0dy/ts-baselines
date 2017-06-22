@@ -206,8 +206,8 @@ def binary_auc_tpr_ppv(y_true, y_score, sample_weight=None):
     ppv = tps / (tps + fps)
     return sklearn.metrics.ranking.auc(tpr, ppv)
 
-def _bayes_embedding(_name, n_cats, index, total_counts, interpolation_dir,
-                     category_index, cur_cat, cur_time):
+@pu.memoize('{0:s}/ps/cat_{2:d}.pkl.gz')
+def create_p(interpolation_dir, total_counts, category_index):
     category_samples = pu.load(os.path.join(interpolation_dir,
                              'cat_{:d}.pkl.gz'.format(category_index)))
     scale = pu.load(os.path.join(interpolation_dir, 'trained',
@@ -217,23 +217,31 @@ def _bayes_embedding(_name, n_cats, index, total_counts, interpolation_dir,
     occurring_cats = (total_counts != 0)
     assert not np.any(np.isnan(p[occurring_cats,:,occurring_cats]))
     assert not np.any(np.isinf(p[occurring_cats,:,occurring_cats]))
+    assert not np.any(p[occurring_cats,:,occurring_cats] < 0)
     p[:,:,~occurring_cats] = 0
     # Revert to baseline in categories that don't occur in the training data
     p[~occurring_cats,:,:] = total_counts/np.sum(total_counts)
 
     n_dims = int(np.ceil(np.log2(np.sum(occurring_cats))))
+    return np.log(p), n_dims
+
+def _bayes_embedding(_name, n_cats, index, total_counts, interpolation_dir,
+                     category_index, cur_cat, cur_time):
 
     name = slugify(_name, separator='_')
+    if _name == 'C Side  Rails':
+        name = 'c_side__rails'
+    print(_name, name)
+    p, n_dims = create_p(interpolation_dir, total_counts, category_index)
     with tf.variable_scope(name):
-        need_to_sample = (cur_cat < 0)
-        logits = tf.constant(np.log(p), name="logits", dtype=tf.float32)
+        need_to_sample = (index < 0)
+        logits = tf.constant(p, name="logits", dtype=tf.float32)
         cur_cat_time = tf.concat([cur_cat, cur_time], axis=1)
         sampled_index = tf.to_int32(tf.multinomial(
             tf.gather_nd(logits, cur_cat_time), 1))
 
-        index = tf.where(need_to_sample, sampled_index, cur_cat, name="index")
-        assert int(index.get_shape()[1]) == 1
-        assert len(index.get_shape()) == 2
+        index = tf.where(need_to_sample, sampled_index[:,0], index, name="index")
+        assert len(index.get_shape()) == 1
 
         # Some of the embeddings here might never get used -- if the category
         # they belong to never appears
@@ -292,17 +300,17 @@ class BayesDropoutCell(tf.contrib.rnn.LayerNormBasicLSTMCell):
         m = bb_alpha_model(inputs, labels=None, N=N,
               num_samples=self._num_samples, layer_sizes=[64], alpha=0.5,
               trainable=False, mean_X=mX, mean_y=my, std_X=sX, std_y=sy,
-              name=name)
+              name='num_{:d}'.format(num_i))
         return m['samples']
 
-    def _accumulate_values(prev_dt, prev_1, inputs, inputs_cond):
-        input_zeros = tf.zeros_like(inputs, dtype=tf.float32)
+    def _accumulate_values(self, prev_dt, prev_1, inputs, inputs_cond):
+        input_zeros = tf.zeros_like(inputs, dtype=prev_dt.dtype)
         dt = tf.where(inputs_cond, prev_dt+1, input_zeros)
         ins = tf.where(inputs_cond, prev_1, inputs)
         return dt, ins
 
     def __call__(self, inputs, state, scope=None):
-        prev_h, prev_c_dt, prev_c, prev_x_dt, prev_x = state
+        prev_h, prev_c_dt, prev_c_1, prev_x_dt, prev_x_1 = state
         categorical_ts, numerical_ts = inputs
 
         with tf.variable_scope(scope or "bayes_dropout_cell"):
@@ -315,15 +323,16 @@ class BayesDropoutCell(tf.contrib.rnn.LayerNormBasicLSTMCell):
                     to_concat.append(_bayes_embedding(
                         name, self._n_categorical_ts[i], categorical_ts[:,i],
                         total_counts, self._interpolation_dir, i,
-                        prev_c[:,i:i+1], prev_c_dt[:,i:i+1]))
+                        prev_c_1[:,i:i+1], prev_c_dt[:,i:i+1])[0])
             with tf.variable_scope("num_inputs"):
-                for i, name in enumerate(self._numerical_headers):
+                for i, _name in enumerate(self._numerical_headers):
+                    name = slugify(_name, separator='_')
                     l = self._bayes_num(
                         name, self._interpolation_dir, i,
-                        prev_x[:,i:i+1], prev_x_dt[:,i:i+1])
-                    num_slice = numerical_ts[:,i]
-                    num_is_nan = tf.isnan(num_slice)
-                    l = tf.where(num_is_nan, l, num_slice)
+                        prev_x_1[:,i:i+1], prev_x_dt[:,i:i+1])
+                    num_slice = numerical_ts[:,i:i+1]
+                    num_is_nan = tf.is_nan(num_slice, name="{:s}_is_nan".format(name))
+                    l = tf.where(num_is_nan, l, num_slice, name="{:s}_select".format(name))
                     to_concat.append(l)
             to_concat.append(self._static_inputs)
             all_inputs = tf.concat(to_concat, axis=1, name="all_inputs")
@@ -334,8 +343,8 @@ class BayesDropoutCell(tf.contrib.rnn.LayerNormBasicLSTMCell):
             with tf.variable_scope("accumulate_cat"):
                 c_dt, c_1 = self._accumulate_values(
                     prev_c_dt, prev_c_1, categorical_ts, (categorical_ts < 0))
-            h = self._gru(inputs=all_inputs, state=prev_h)
-        return h, BDCellStateTuple(h, c_dt, c_1, x_dt, x_1)
+            out, state = self._gru(inputs=all_inputs, state=prev_h)
+        return out, BDCellStateTuple(state, c_dt, c_1, x_dt, x_1)
 
 
 def BayesDropout(num_units, num_layers, inputs_dict, input_means_dict,
@@ -367,8 +376,12 @@ def BayesDropout(num_units, num_layers, inputs_dict, input_means_dict,
     ini_state_flat = []
     for i, sz in enumerate(state_size_flat):
         if i == 1: # Time since last input (categories)
-            ini_state_flat.append(tf.cast(
-                inputs_dict['categorical_ts_dt'], tf.int32))
+            ini_state_flat.append(tf.clip_by_value(
+                tf.cast(inputs_dict['categorical_ts_dt'], tf.int32),
+                0, list(pu.load('{0:s}/ps/cat_{1:d}.pkl.gz'
+                                .format(interpolation_dir, n))[0].shape[1]
+                        for n in range(len(
+                                number_of_categories['categorical_ts'])))))
         elif i == 3: # Time since last input (categories)
             ini_state_flat.append(inputs_dict['numerical_ts_dt'])
         else:

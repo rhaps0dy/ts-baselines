@@ -115,6 +115,7 @@ class LayerNormBasicGRUCell(tf.contrib.rnn.LayerNormBasicLSTMCell):
                               or self._keep_prob < 1):
             g = tf.nn.dropout(g, self._keep_prob, seed=self._seed)
         new_state = (1-z)*state + z*g
+        return new_state
 
     def __call__(self, inputs, state, scope=None):
         with tf.variable_scope(scope or "layer_norm_basic_gru_cell"):
@@ -127,9 +128,12 @@ class LayerNormVariationalDropoutGRUCell(LayerNormBasicGRUCell):
         assert int(recurrent_dropout.get_shape()[1]) == num_units
         assert int(output_dropout.get_shape()[1]) == num_units
 
+        self._output_dropout = output_dropout
+        self._recurrent_dropout = recurrent_dropout
+
     def __call__(self, inputs, state, scope=None):
         with tf.variable_scope(scope or "layer_norm_variational_dropout_gru_cell"):
             new_state = self._next_state(inputs, state, False)
-            output = new_state*output_dropout
-            memory = new_state*recurrent_dropout
+            output = new_state*self._output_dropout
+            memory = new_state*self._recurrent_dropout
         return output, memory
