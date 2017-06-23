@@ -104,7 +104,8 @@ def main(_):
                               feature_numbers['categorical_ts'])
         d = getattr(FLAGS, flag)
         return pu.load(os.path.join(d, f.format(total_num_features)))
-    input_means = pu.load(os.path.join(FLAGS.dataset, 'means.pkl.gz'))
+    input_means_numerical = pu.load(os.path.join(FLAGS.dataset, 'means.pkl.gz'))
+    input_means_numerical = input_means_numerical[0] / input_means_numerical[1]
     # The number of categories is computed from _all_ the data set, since we
     # need to build our model to fit enough of them in its arrays. However it
     # is _not overfitting_, even if one of the categories does not appear in
@@ -121,7 +122,7 @@ def main(_):
             m = Model(num_units=FLAGS.hidden_units,
                       num_layers=FLAGS.hidden_layers,
                       inputs_dict=inputs,
-                      input_means_dict=input_means,
+                      input_means_numerical=input_means_numerical,
                       number_of_categories=number_of_categories,
                       categorical_headers=categorical_headers,
                       numerical_headers=numerical_headers,
@@ -158,15 +159,19 @@ def main(_):
             num_dir = os.path.join(FLAGS.interpolation, 'trained',
                                     'num_{:d}'.format(i))
             num_ckpt = pu.load(os.path.join(num_dir, 'validated_best.pkl'))
-            ckpt_fname = os.path.join(num_dir, 'new-ckpt-{:d}'.format(num_ckpt))
-            saver_l = []
+            ckpt_fname = os.path.join(num_dir, 'ckpt-{:d}'.format(num_ckpt))
+            saver_d = {}
             with tf.variable_scope("", reuse=True):
                 for var_name, _ in tf.contrib.framework.list_variables(ckpt_fname):
-                    saver_l.append(tf.get_variable(var_name))
-            _saver = tf.train.Saver(saver_l)
+                    if var_name.startswith("num_") and 'Adam' not in var_name:
+                        saver_d[var_name] = tf.get_variable("BayesDropout/rnn/bayes_dropout_cell/num_inputs/"+var_name)
+            _saver = tf.train.Saver(saver_d)
             return (_saver, ckpt_fname)
 
-        num_savers = list(map(load_num_model,
+        if FLAGS.model == 'GRUD':
+            num_savers = []
+        else:
+            num_savers = list(map(load_num_model,
                               range(feature_numbers['numerical_ts'])))
 
         sv = tf.train.Supervisor(is_chief=True,

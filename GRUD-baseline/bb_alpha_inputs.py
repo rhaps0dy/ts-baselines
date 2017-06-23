@@ -5,6 +5,7 @@ import itertools as it
 import functools
 import math
 import os
+from tqdm import tqdm
 
 if __name__ == '__main__':
     flags = tf.app.flags
@@ -12,7 +13,7 @@ if __name__ == '__main__':
     flags.DEFINE_integer('num_samples', 16, 'samples to estimate expectation')
     flags.DEFINE_float('learning_rate', 0.001, 'learning rate for ADAM')
     flags.DEFINE_integer('feature_i', None, 'Feature to learn')
-    flags.DEFINE_string('layer_sizes', '[64]', 'layer sizes')
+    flags.DEFINE_string('layer_sizes', '[8]', 'layer sizes')
     flags.DEFINE_string('interpolation', None, 'Location of interpolation folder')
     flags.DEFINE_integer('patience', 20, 'Number of epochs to wait if'
                          'validation log-likelihood does not increase')
@@ -255,7 +256,7 @@ def main(_):
         highest_likelihood = -np.inf
         times_waiting = 0
         try:
-            for step in range(0, 200000):
+            for step in tqdm(range(0, 200000)):
                 s = slice(slice_start, slice_start+FLAGS.batch_size)
                 slice_start += FLAGS.batch_size
                 if slice_start > len(X_train):
