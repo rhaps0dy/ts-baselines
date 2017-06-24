@@ -170,7 +170,7 @@ def main(_):
             _saver = tf.train.Saver(saver_d)
             return (_saver, ckpt_fname)
 
-        if or FLAGS.model == 'GRUD':
+        if FLAGS.model == 'GRUD':
             num_savers = []
         else:
             num_savers = list(map(load_num_model,
