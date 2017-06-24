@@ -3,7 +3,6 @@ import numpy as np
 from gru_ln_dropout_cell import (LayerNormDropoutGRUDCell,
                                  LayerNormBasicGRUCell,
                                  LayerNormVariationalDropoutGRUCell)
-from slugify import slugify
 import collections
 import pickle_utils as pu
 import os
@@ -12,13 +11,17 @@ from tensorflow.python.util import nest
 from bb_alpha_inputs import add_variable_scope, model as bb_alpha_model
 import fast_smooth_category_counts as fscc
 
+from slugify import slugify as slugify_unpatched
+def slugify(name, *args, **kwargs):
+    if name == 'C Side  Rails':
+        return 'c_side__rails'
+    return slugify_unpatched(name, *args, **kwargs)
+
 def _make_embedding(_name, n_cats, index, total_counts=None):
     if total_counts is None:
         total_counts = np.array([1]*n_cats)
 
     name = slugify(_name, separator='_')
-    if _name == 'C Side  Rails':
-        name = 'c_side__rails'
     ignore_categories = np.concatenate(([True], (total_counts==0)), axis=0)
 
     # We use the ceiling of log2(n_cats), each dimension can hold a bit.
@@ -230,9 +233,6 @@ def _bayes_embedding(_name, n_cats, index, total_counts, interpolation_dir,
                      category_index, cur_cat, cur_time):
 
     name = slugify(_name, separator='_')
-    if _name == 'C Side  Rails':
-        name = 'c_side__rails'
-    print(_name, name)
     p, n_dims = create_p(interpolation_dir, total_counts, category_index)
     with tf.variable_scope('cat_{:d}'.format(category_index)):
         need_to_sample = (index < 0)

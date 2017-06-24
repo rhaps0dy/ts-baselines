@@ -59,12 +59,14 @@ def validate_checkpoint(persist):
     if latest_ckpt is None or latest_ckpt == persist['latest_ckpt']:
         return
     persist['latest_ckpt'] = latest_ckpt
-    args = ["python", sys.argv[0], "--command=validate", "--num_epochs=1",
-            "--batch_size=256"]
-    args.append("--load_file={:s}".format(latest_ckpt))
-    for f in ['log_dir', 'hidden_units', 'hidden_layers', 'dropout',
-            'layer_norm', 'model']:
-        args.append("--{:s}={}".format(f, getattr(FLAGS, f)))
+
+    args = [sys.executable, sys.argv[0]]
+    flags = FLAGS.__flags.copy()
+    flags['command'] = 'validate'
+    flags['num_epochs'] = 1
+    flags['load_file'] = latest_ckpt
+    for name, value in flags.items():
+        args.append("--{:s}={}".format(name, value))
 
     for proc in persist['running_procs'][:]:
         if proc.poll() is not None:
@@ -168,7 +170,7 @@ def main(_):
             _saver = tf.train.Saver(saver_d)
             return (_saver, ckpt_fname)
 
-        if FLAGS.model == 'GRUD':
+        if or FLAGS.model == 'GRUD':
             num_savers = []
         else:
             num_savers = list(map(load_num_model,
