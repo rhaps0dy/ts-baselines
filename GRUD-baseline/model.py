@@ -3,6 +3,7 @@ import numpy as np
 from gru_ln_dropout_cell import (LayerNormDropoutGRUDCell,
                                  LayerNormBasicGRUCell,
                                  LayerNormVariationalDropoutGRUCell)
+from slugify import slugify
 import collections
 import pickle_utils as pu
 import os
@@ -10,12 +11,6 @@ import os
 from tensorflow.python.util import nest
 from bb_alpha_inputs import add_variable_scope, model as bb_alpha_model
 import fast_smooth_category_counts as fscc
-
-from slugify import slugify as slugify_unpatched
-def slugify(name, *args, **kwargs):
-    if name == 'C Side  Rails':
-        return 'c_side__rails'
-    return slugify_unpatched(name, *args, **kwargs)
 
 def _make_embedding(_name, n_cats, index, total_counts=None):
     if total_counts is None:
@@ -79,10 +74,10 @@ def _tile_static(recurrent_inputs, recurrent_inputs_dt, static_inputs):
     return inputs, inputs_dt
 
 
-def GRUD(num_units, num_layers, inputs_dict, input_means_numerical,
+def GRUD(num_units, num_layers, inputs_dict, input_means_dict,
          number_of_categories, categorical_headers, default_batch_size,
-         layer_norm, interpolation_dir, numerical_headers, num_samples):
-    del numerical_headers, num_samples
+         layer_norm, interpolation_dir):
+    del interpolation_dir
 
     keep_prob = tf.placeholder(shape=[], dtype=tf.float32)
     recurrent_inputs, recurrent_inputs_dt, static_inputs = _embed_categorical(
@@ -95,7 +90,8 @@ def GRUD(num_units, num_layers, inputs_dict, input_means_numerical,
 
     # Input means will default to 0 for categorical variables
     input_means = np.zeros([inputs_dt.get_shape()[1]], dtype=np.float32)
-    input_means[:inputs_dict['numerical_ts_dt'].get_shape()[1]] = input_means_numerical
+    input_means[:inputs_dict['numerical_ts_dt'].get_shape()[1]] = (
+        input_means_dict['numerical_ts'])
 
     # Create cell
     cells = [LayerNormDropoutGRUDCell(num_units, input_means,
@@ -210,8 +206,8 @@ def binary_auc_tpr_ppv(y_true, y_score, sample_weight=None):
     ppv = tps / (tps + fps)
     return sklearn.metrics.ranking.auc(tpr, ppv)
 
-@pu.memoize('{0:s}/ps/cat_{2:d}.pkl.gz')
-def create_p(interpolation_dir, total_counts, category_index):
+def _bayes_embedding(_name, n_cats, index, total_counts, interpolation_dir,
+                     category_index, cur_cat, cur_time):
     category_samples = pu.load(os.path.join(interpolation_dir,
                              'cat_{:d}.pkl.gz'.format(category_index)))
     scale = pu.load(os.path.join(interpolation_dir, 'trained',
@@ -227,23 +223,18 @@ def create_p(interpolation_dir, total_counts, category_index):
     p[~occurring_cats,:,:] = total_counts/np.sum(total_counts)
 
     n_dims = int(np.ceil(np.log2(np.sum(occurring_cats))))
-    return np.log(p), n_dims
-
-def _bayes_embedding(_name, n_cats, index, total_counts, interpolation_dir,
-                     category_index, cur_cat, cur_time):
 
     name = slugify(_name, separator='_')
-    p, n_dims = create_p(interpolation_dir, total_counts, category_index)
-    with tf.variable_scope('cat_{:d}'.format(category_index)):
-        need_to_sample = (index < 0)
-        cur_time = tf.clip_by_value(cur_time, 0, len(p)-1)
-        logits = tf.constant(p, name="logits", dtype=tf.float32)
+    with tf.variable_scope(name):
+        need_to_sample = (cur_cat < 0)
+        logits = tf.constant(np.log(p), name="logits", dtype=tf.float32)
         cur_cat_time = tf.concat([cur_cat, cur_time], axis=1)
         sampled_index = tf.to_int32(tf.multinomial(
             tf.gather_nd(logits, cur_cat_time), 1))
 
-        index = tf.where(need_to_sample, sampled_index[:,0], index, name="index")
-        assert len(index.get_shape()) == 1
+        index = tf.where(need_to_sample, sampled_index, cur_cat, name="index")
+        assert int(index.get_shape()[1]) == 1
+        assert len(index.get_shape()) == 2
 
         # Some of the embeddings here might never get used -- if the category
         # they belong to never appears
@@ -294,25 +285,25 @@ class BayesDropoutCell(tf.contrib.rnn.LayerNormBasicLSTMCell):
         return self._gru.output_size
 
     def _bayes_num(self, name, interpolation_dir, num_i, prev_x, prev_dt):
-        #inputs = tf.concat([prev_x, prev_dt], axis=1,
-        #                   name="concat_{:s}".format(name))
-        #mX, sX, my, sy, N = pu.load(os.path.join(
-        #    interpolation_dir, 'trained', 'num_{:d}'.format(num_i),
-        #    'means.pkl.gz'))
-        #m = bb_alpha_model(inputs, labels=None, N=N,
-        #      num_samples=self._num_samples, layer_sizes=[8], alpha=0.5,
-        #      trainable=False, mean_X=mX, mean_y=my, std_X=sX, std_y=sy,
-        #      name='num_{:d}'.format(num_i))
-        return tf.zeros_like(prev_x)
+        inputs = tf.concat([prev_x, prev_dt], axis=1,
+                           name="concat_{:s}".format(name))
+        mX, sX, my, sy, N = pu.load(os.path.join(
+            interpolation_dir, 'trained', 'num_{:d}'.format(num_i),
+            'means.pkl.gz'))
+        m = bb_alpha_model(inputs, labels=None, N=N,
+              num_samples=self._num_samples, layer_sizes=[64], alpha=0.5,
+              trainable=False, mean_X=mX, mean_y=my, std_X=sX, std_y=sy,
+              name=name)
+        return m['samples']
 
-    def _accumulate_values(self, prev_dt, prev_1, inputs, inputs_cond):
-        input_zeros = tf.zeros_like(inputs, dtype=prev_dt.dtype)
+    def _accumulate_values(prev_dt, prev_1, inputs, inputs_cond):
+        input_zeros = tf.zeros_like(inputs, dtype=tf.float32)
         dt = tf.where(inputs_cond, prev_dt+1, input_zeros)
         ins = tf.where(inputs_cond, prev_1, inputs)
         return dt, ins
 
     def __call__(self, inputs, state, scope=None):
-        prev_h, prev_c_dt, prev_c_1, prev_x_dt, prev_x_1 = state
+        prev_h, prev_c_dt, prev_c, prev_x_dt, prev_x = state
         categorical_ts, numerical_ts = inputs
 
         with tf.variable_scope(scope or "bayes_dropout_cell"):
@@ -325,16 +316,15 @@ class BayesDropoutCell(tf.contrib.rnn.LayerNormBasicLSTMCell):
                     to_concat.append(_bayes_embedding(
                         name, self._n_categorical_ts[i], categorical_ts[:,i],
                         total_counts, self._interpolation_dir, i,
-                        prev_c_1[:,i:i+1], prev_c_dt[:,i:i+1])[0])
+                        prev_c[:,i:i+1], prev_c_dt[:,i:i+1]))
             with tf.variable_scope("num_inputs"):
-                for i, _name in enumerate(self._numerical_headers):
-                    name = slugify(_name, separator='_')
+                for i, name in enumerate(self._numerical_headers):
                     l = self._bayes_num(
                         name, self._interpolation_dir, i,
-                        prev_x_1[:,i:i+1], prev_x_dt[:,i:i+1])
-                    num_slice = numerical_ts[:,i:i+1]
-                    num_is_nan = tf.is_nan(num_slice, name="{:s}_is_nan".format(name))
-                    l = tf.where(num_is_nan, l, num_slice, name="{:s}_select".format(name))
+                        prev_x[:,i:i+1], prev_x_dt[:,i:i+1])
+                    num_slice = numerical_ts[:,i]
+                    num_is_nan = tf.isnan(num_slice)
+                    l = tf.where(num_is_nan, l, num_slice)
                     to_concat.append(l)
             to_concat.append(self._static_inputs)
             all_inputs = tf.concat(to_concat, axis=1, name="all_inputs")
@@ -345,14 +335,14 @@ class BayesDropoutCell(tf.contrib.rnn.LayerNormBasicLSTMCell):
             with tf.variable_scope("accumulate_cat"):
                 c_dt, c_1 = self._accumulate_values(
                     prev_c_dt, prev_c_1, categorical_ts, (categorical_ts < 0))
-            out, state = self._gru(inputs=all_inputs, state=prev_h)
-        return out, BDCellStateTuple(state, c_dt, c_1, x_dt, x_1)
+            h = self._gru(inputs=all_inputs, state=prev_h)
+        return h, BDCellStateTuple(h, c_dt, c_1, x_dt, x_1)
 
 
-def BayesDropout(num_units, num_layers, inputs_dict, input_means_numerical,
+def BayesDropout(num_units, num_layers, inputs_dict, input_means_dict,
                  number_of_categories, categorical_headers, numerical_headers,
                  default_batch_size, layer_norm, interpolation_dir, num_samples):
-    del input_means_numerical
+    del input_means_dict
 
     if num_layers != 1:
         raise NotImplementedError("more than 1 layer")
@@ -378,14 +368,8 @@ def BayesDropout(num_units, num_layers, inputs_dict, input_means_numerical,
     ini_state_flat = []
     for i, sz in enumerate(state_size_flat):
         if i == 1: # Time since last input (categories)
-            #t_lens = []
-            #for n in range(len(number_of_categories['categorical_ts'])):
-            #    arr = pu.load('{0:s}/ps/cat_{1:d}.pkl.gz'
-            #                  .format(interpolation_dir, n))[0]
-            #    print(arr.shape[1], arr.shape[1]-3)
-            #    t_lens.append(arr.shape[1]-3)
-            ini_state_flat.append(
-                tf.cast(inputs_dict['categorical_ts_dt'], tf.int32))
+            ini_state_flat.append(tf.cast(
+                inputs_dict['categorical_ts_dt'], tf.int32))
         elif i == 3: # Time since last input (categories)
             ini_state_flat.append(inputs_dict['numerical_ts_dt'])
         else:

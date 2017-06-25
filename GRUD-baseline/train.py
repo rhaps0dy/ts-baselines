@@ -20,6 +20,7 @@ flags.DEFINE_string('log_dir', None, 'Base directory for logs')
 flags.DEFINE_integer('min_after_dequeue', 5000,
                      'Minimum number of examples to draw from in the RandomShuffleQueue')
 flags.DEFINE_integer('n_queue_threads', 2, 'number of queue threads')
+flags.DEFINE_integer('n_threads', 4, 'number of total threads')
 flags.DEFINE_integer('batch_size', 64, 'batch size for training')
 flags.DEFINE_integer('num_epochs', 1000, 'number of training epochs')
 flags.DEFINE_integer('hidden_units', 100, 'Number of hidden units per LSTM layer')
@@ -33,6 +34,7 @@ flags.DEFINE_string('model', 'GRUD', 'the model to use')
 flags.DEFINE_string('dataset', '../clean_ventilation/dataset', 'Dataset folder')
 flags.DEFINE_string('interpolation', '../clean_ventilation/interpolation',
                     'Interpolation data/trained model folder')
+flags.DEFINE_bool('impute_as_zeros', False, 'impute numerical features as zeros')
 del flags
 FLAGS = tf.app.flags.FLAGS
 
@@ -77,6 +79,8 @@ def validate_checkpoint(persist):
 
 def main(_):
     assert FLAGS.log_dir is not None
+    config = tf.ConfigProto(intra_op_parallelism_threads=FLAGS.n_threads)
+
     shuffle = True
     feature_numbers = pu.load(os.path.join(FLAGS.dataset, 'feature_numbers.pkl.gz'))
     print(feature_numbers)
@@ -170,7 +174,7 @@ def main(_):
             _saver = tf.train.Saver(saver_d)
             return (_saver, ckpt_fname)
 
-        if FLAGS.model == 'GRUD':
+        if FLAGS.model == 'GRUD' or FLAGS.impute_as_zeros:
             num_savers = []
         else:
             num_savers = list(map(load_num_model,
@@ -192,7 +196,7 @@ def main(_):
         d = {m['keep_prob']: FLAGS.dropout, loss_ph: 0.0}
 
         validate_checkpoint_persist = {}
-        with sv.managed_session() as sess:
+        with sv.managed_session(config=config) as sess:
             sv.loop(300, validate_checkpoint, args=(validate_checkpoint_persist,))
             sess.run(tf.get_collection('make_embeddings_nan'))
             for _saver, ckpt_fname in num_savers:
@@ -211,7 +215,7 @@ def main(_):
             sv.stop()
 
     elif FLAGS.command == 'validate':
-        with tf.Session() as sess:
+        with tf.Session(config=config) as sess:
             sess.run(tf.global_variables_initializer())
             sess.run(tf.local_variables_initializer())
 
