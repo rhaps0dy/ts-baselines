@@ -24,6 +24,15 @@ N_PROCESSORS = 8
 MIMIC_PATH = '../../mimic.csv.gz'
 STATIC_PATH = '../../static_patients.csv.gz'
 
+def context(example, key, dtype, iterable):
+    a = getattr(example.context.feature[key], dtype+'_list').value
+    a.extend(iterable)
+def sequence(example, key, dtype, iterable):
+    feature_list = example.feature_lists.feature_list[key].feature
+    for row in iterable.reshape([len(iterable), -1]):
+        a = getattr(feature_list.add(), dtype+'_list').value
+        a.extend(row)
+
 def get_headers(table):
     "Get the headers of a MIMIC sub-table"
     with gzip.open('../../{:s}.csv.gz'.format(table), 'rt',
@@ -206,27 +215,19 @@ def write_tfrecords(mimic, i, numerical_headers, categorical_headers, treatments
             assert len(categorical_static.shape) == 1
 
             example = tf.train.SequenceExample()
-            def context(key, dtype, iterable):
-                a = getattr(example.context.feature[key], dtype+'_list').value
-                a.extend(iterable)
-            def sequence(key, dtype, iterable):
-                feature_list = example.feature_lists.feature_list[key].feature
-                for row in iterable.reshape([len(iterable), -1]):
-                    a = getattr(feature_list.add(), dtype+'_list').value
-                    a.extend(row)
 
-            context('icustay_id', 'int64', [icustay_id])
-            context('numerical_static', 'float', numerical_static),
-            context('categorical_static', 'int64', categorical_static),
-            context('numerical_ts_dt', 'float', numerical_ts_dt),
-            context('categorical_ts_dt', 'float', categorical_ts_dt),
+            context(example, 'icustay_id', 'int64', [icustay_id])
+            context(example, 'numerical_static', 'float', numerical_static),
+            context(example, 'categorical_static', 'int64', categorical_static),
+            context(example, 'numerical_ts_dt', 'float', numerical_ts_dt),
+            context(example, 'categorical_ts_dt', 'float', categorical_ts_dt),
 
-            sequence('time_until_label', 'float', time_until_label),
-            sequence('label', 'float', label.astype(np.float32)),
-            sequence('numerical_ts', 'float', numerical_ts),
-            sequence('categorical_ts', 'int64', categorical_ts),
-            sequence('treatments_ts', 'float', treatments_ts.astype(np.float32)),
-            sequence('ventilation_ends', 'int64', ventilation_ends[:,0])
+            sequence(example, 'time_until_label', 'float', time_until_label),
+            sequence(example, 'label', 'float', label.astype(np.float32)),
+            sequence(example, 'numerical_ts', 'float', numerical_ts),
+            sequence(example, 'categorical_ts', 'int64', categorical_ts),
+            sequence(example, 'treatments_ts', 'float', treatments_ts.astype(np.float32)),
+            sequence(example, 'ventilation_ends', 'int64', ventilation_ends[:,0])
 
             writer.write(example.SerializeToString())
 
