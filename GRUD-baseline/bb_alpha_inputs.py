@@ -119,8 +119,8 @@ def make_log_likelihood(preds, labels, n_outputs, log_noise, noise_var):
 
 @add_variable_scope(name=None)
 def model(inputs, labels, N, num_samples, layer_sizes, alpha=0.5,
-          trainable=True, mean_X=None, mean_y=None, std_X=None, std_y=None):
-    if not trainable:
+          trainable=True, include_samples=False, mean_X=None, mean_y=None, std_X=None, std_y=None):
+    if mean_X is not None:
         inputs = (inputs - tf.constant(mean_X)) / tf.constant(std_X)
     if labels is None:
         n_outputs = len(mean_y)
@@ -171,7 +171,11 @@ def model(inputs, labels, N, num_samples, layer_sizes, alpha=0.5,
         results['mean_prediction'] = mean_prediction
         results['min_prediction'] = min_prediction
         results['max_prediction'] = max_prediction
-    else:
+        if mean_X is not None:
+            results['mean_prediction'] = results['mean_prediction']*std_y + mean_y
+            results['min_prediction'] = results['min_prediction']*std_y + mean_y
+            results['max_prediction'] = results['max_prediction']*std_y + mean_y
+    if include_samples:
         noise = tf.random_normal(
             tf.shape(preds), stddev=noise_std, name="noise")
         w_s = tf.reduce_mean(preds+noise, axis=0, name="white_samples")
@@ -185,6 +189,7 @@ def build_sampler(inputs, feature_i, num_samples=8, layer_sizes=[64]):
     mX, sX, my, sy, N = pu.load(
         os.path.join(log_dir, 'means.pkl.gz'))
     m = model(inputs, None, N, num_samples, layer_sizes, trainable=False,
+              include_samples=True,
               mean_X=mX, mean_y=my, std_X=sX, std_y=sy,
               name="num_{:d}".format(feature_i))
     validated_best = pu.load(os.path.join(log_dir, 'validated_best.pkl'))
@@ -293,9 +298,6 @@ def main(_):
         pY, pY_min, pY_max = sess.run(
             [m['mean_prediction'], m['min_prediction'], m['max_prediction']],
             {inputs: X_test})
-        pY = pY*std_y_train + mean_y_train
-        pY_min = pY_min*std_y_train + mean_y_train
-        pY_max = pY_max*std_y_train + mean_y_train
         pu.dump((pY, pY_min, pY_max), out_file)
         print(pY.shape, pY_min.shape, pY_max.shape)
 

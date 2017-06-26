@@ -81,7 +81,8 @@ def GRUD(num_units, num_layers, inputs_dict, input_means_dict,
 
     keep_prob = tf.placeholder(shape=[], dtype=tf.float32)
     recurrent_inputs, recurrent_inputs_dt, static_inputs = _embed_categorical(
-        inputs_dict, categorical_headers, number_of_categories, interpolation_dir)
+        inputs_dict, categorical_headers, number_of_categories,
+        interpolation_dir)
 
     inputs, inputs_dt = _tile_static(recurrent_inputs, recurrent_inputs_dt,
                                      static_inputs)

@@ -6,8 +6,6 @@ NpExample = collections.namedtuple('NpExample', [
     'numerical_static', 'categorical_static', 'numerical_ts',
     'numerical_ts_dt', 'categorical_ts', 'categorical_ts_dt', 'treatments_ts'])
 """
-import collections
-
 import numpy as np
 import pandas as pd
 import itertools as it
@@ -15,6 +13,7 @@ import pickle_utils as pu
 import tensorflow as tf
 import gzip
 import csv
+import common
 import math
 import os
 import os.path
@@ -270,7 +269,7 @@ def write_tfrecords(mimic, i, numerical_headers, categorical_headers, treatments
                 'treatments_ts': treatments_ts.astype(np.float32),
                 'ventilation_ends': ventilation_ends[:,0],
             }
-            example = example_from_data(data)
+            example = common.example_from_data(data)
             writer.write(example.SerializeToString())
 
             if n_examples > 10:

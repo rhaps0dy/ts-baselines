@@ -13,29 +13,28 @@ from read_tfrecords import build_input_machinery
 from bb_alpha_inputs import build_sampler
 import model
 
-flags = tf.app.flags
-flags.DEFINE_string('command', 'train', 'What to do [train, validate, profile_training]')
-flags.DEFINE_string('load_file', '', 'What file to load for validating?')
-flags.DEFINE_string('log_dir', None, 'Base directory for logs')
-flags.DEFINE_integer('min_after_dequeue', 5000,
-                     'Minimum number of examples to draw from in the RandomShuffleQueue')
-flags.DEFINE_integer('n_queue_threads', 2, 'number of queue threads')
-flags.DEFINE_integer('n_threads', 4, 'number of total threads')
-flags.DEFINE_integer('batch_size', 64, 'batch size for training')
-flags.DEFINE_integer('num_epochs', 1000, 'number of training epochs')
-flags.DEFINE_integer('hidden_units', 100, 'Number of hidden units per LSTM layer')
-flags.DEFINE_integer('hidden_layers', 1, 'Number of hidden LSTM layers')
-flags.DEFINE_integer('num_samples', 10,
-                     'Number of samples for the monte-carlo imputation')
-flags.DEFINE_float('learning_rate', 0.001, 'learning rate for ADAM')
-flags.DEFINE_float('dropout', 0.5, 'probability of keeping a neuron on')
-flags.DEFINE_boolean('layer_norm', True, 'Whether to use Layer Normalisation')
-flags.DEFINE_string('model', 'GRUD', 'the model to use')
-flags.DEFINE_string('dataset', '../clean_ventilation/dataset', 'Dataset folder')
-flags.DEFINE_string('interpolation', '../clean_ventilation/interpolation',
-                    'Interpolation data/trained model folder')
-flags.DEFINE_bool('impute_as_zeros', False, 'impute numerical features as zeros')
-del flags
+if __name__ == '__main__':
+    flags = tf.app.flags
+    flags.DEFINE_string('command', 'train', 'What to do [train, validate, profile_training]')
+    flags.DEFINE_string('load_file', '', 'What file to load for validating?')
+    flags.DEFINE_string('log_dir', None, 'Base directory for logs')
+    flags.DEFINE_integer('min_after_dequeue', 5000,
+                        'Minimum number of examples to draw from in the RandomShuffleQueue')
+    flags.DEFINE_integer('n_queue_threads', 2, 'number of queue threads')
+    flags.DEFINE_integer('batch_size', 64, 'batch size for training')
+    flags.DEFINE_integer('num_epochs', 1000, 'number of training epochs')
+    flags.DEFINE_integer('hidden_units', 100, 'Number of hidden units per LSTM layer')
+    flags.DEFINE_integer('hidden_layers', 1, 'Number of hidden LSTM layers')
+    flags.DEFINE_integer('num_samples', 10,
+                        'Number of samples for the monte-carlo imputation')
+    flags.DEFINE_float('learning_rate', 0.001, 'learning rate for ADAM')
+    flags.DEFINE_float('dropout', 0.5, 'probability of keeping a neuron on')
+    flags.DEFINE_boolean('layer_norm', True, 'Whether to use Layer Normalisation')
+    flags.DEFINE_string('model', 'GRUD', 'the model to use')
+    flags.DEFINE_string('dataset', '../clean_ventilation/dataset', 'Dataset folder')
+    flags.DEFINE_string('interpolation', '../clean_ventilation/interpolation',
+                        'Interpolation data/trained model folder')
+    del flags
 FLAGS = tf.app.flags.FLAGS
 
 def build_validation_summaries(hours_before, metric):
