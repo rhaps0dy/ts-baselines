@@ -6,6 +6,7 @@ import collections
 import os
 import sys
 from tqdm import tqdm
+import to_tfrecords
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)),
                                 '..', 'GRUD-baseline'))
@@ -13,21 +14,26 @@ from read_tfrecords import build_input_machinery
 
 flags = tf.app.flags
 flags.DEFINE_string('dataset', '', 'The file to use as input dataset')
-flags.DEFINE_string('command', 'GatherInterpolationInfo', 'The command to perform')
+flags.DEFINE_string('command', 'GatherInterpolationInfo',
+                    'The command to perform')
 del flags
 FLAGS = tf.app.flags.FLAGS
 BATCH_SIZE = 64
 
+
 class GatherInterpolationInfo:
     keys = ['numerical_ts', 'categorical_ts', 'length']
+
     def __init__(self, dataset):
         self.dataset = dataset
-        self.num_shape = [BATCH_SIZE, int(self.dataset['numerical_ts'].get_shape()[2])]
+        self.num_shape = [BATCH_SIZE, int(self.dataset['numerical_ts']
+                                          .get_shape()[2])]
         self.last_num_ts = np.empty(self.num_shape, dtype=np.float32)
         self.num_ts_dt = np.zeros(self.num_shape, dtype=np.int)
 
-        self.cat_shape = [BATCH_SIZE, int(self.dataset['categorical_ts'].get_shape()[2])]
-        self.last_cat_ts = -np.ones(self.cat_shape, dtype=np.int32) # all -1
+        self.cat_shape = [BATCH_SIZE, int(self.dataset['categorical_ts']
+                                          .get_shape()[2])]
+        self.last_cat_ts = -np.ones(self.cat_shape, dtype=np.int32)  # all -1
         self.cat_ts_dt = np.zeros(self.cat_shape, dtype=np.int)
 
         self.num_interpolate_X = list([] for _ in range(self.num_shape[1]))
@@ -59,8 +65,8 @@ class GatherInterpolationInfo:
                 'constant', constant_values=np.nan)
             categorical_ts = np.pad(
                 categorical_ts,
-                [(0, self.cat_shape[0]-categorical_ts.shape[0]), (0, 0), (0, 0)],
-                'constant', constant_values=-1)
+                [(0, self.cat_shape[0]-categorical_ts.shape[0]), (0, 0),
+                 (0, 0)], 'constant', constant_values=-1)
             length = np.pad(
                 length,
                 [(0, self.num_shape[0]-length.shape[0])],
@@ -120,48 +126,115 @@ class GatherInterpolationInfo:
 
 class AddInterpolationInputs:
     keys = ['icustay_id', 'numerical_static', 'categorical_static',
-                'numerical_ts_dt', 'categorical_ts_dt', 'time_until_label',
-                'label', 'numerical_ts', 'categorical_ts', 'treatments_ts',
-                'ventilation_ends']
+            'numerical_ts_dt', 'categorical_ts_dt', 'time_until_label',
+            'label', 'numerical_ts', 'categorical_ts', 'treatments_ts',
+            'ventilation_ends', 'length']
 
     def __init__(self, dataset):
         self.dataset = dataset
         self.writer = tf.python_io.TFRecordWriter(FLAGS.dataset+'-new')
         self.writer.__enter__()
+        dataset_dir = os.path.dirname(FLAGS.dataset)
+        values, counts = pu.load(os.path.join(dataset_dir, 'means.pkl.gz'))
+        self.means = values/counts
+        self.most_common_cats = pu.load(os.path.join(dataset_dir, 'most_common_cats.pkl.gz'))
 
     @staticmethod
-    def build_dt(d, d_valid, initial_dt):
+    def build_dt(d, d_valid, initial_dt, also_delayed=False):
         d = np.transpose(d, [1,0,2])
         d_valid = np.transpose(d_valid, [1,0,2])
         dt = np.zeros_like(d, dtype=np.int64)
-        dt[0,:] = initial_dt
+        dt[0,:,:] = initial_dt
+        if also_delayed:
+            delayed_dt = np.copy(dt)
+            delayed_dt[0,:,:] = initial_dt
+            delayed_dt[0,(initial_dt==0)] = 1000
         for t in range(1, dt.shape[0]):
-            dt[t] = dt[t-1]+1
+            dt[t] = dt[t-1] + 1
+            if also_delayed:
+                delayed_dt[t] = dt[t]
             dt[t,d_valid[t]] = 0
-        return np.transpose(dt, [1,0,2])
+
+        dt = np.transpose(dt, [1,0,2])
+        if also_delayed:
+            return dt, np.transpose(delayed_dt, [1,0,2])
+        return dt
 
     @staticmethod
-    def build_impute_forward(d, d_valid, means):
+    def build_impute_forward(d, d_valid, means, also_delayed=False):
+        batch_size = d.shape[0]
         d = np.transpose(d, [1,0,2])
         d_valid = np.transpose(d_valid, [1,0,2])
         impute = np.copy(d)
         initial_valid = d_valid[0,:]
-        impute[0,initial_valid] = means[0,initial_valid]
+        batch_means = np.stack([means]*batch_size)
+        impute[0,initial_valid] = batch_means[initial_valid]
         for t in range(1, impute.shape[0]):
             to_carry_forward = ~d_valid[t,:]
             impute[t,to_carry_forward] = impute[t-1,to_carry_forward]
-        return np.transpose(impute, [1,0,2])
+        impute_transposed = np.transpose(impute, [1,0,2])
+        if also_delayed:
+            delayed_impute = np.empty(impute.shape, dtype=impute.dtype)
+            delayed_impute[1:,:,:] = impute[:-1,:,:]
+            delayed_impute[0,:,:] = batch_means
+            return impute_transposed, np.transpose(delayed_impute, [1,0,2])
+        return impute_transpoed
+
+    @staticmethod
+    def make_within_length(d, length):
+        batch_sz, len_t, n_cats = d.shape
+        time = np.stack([np.arange(len_t)] * batch_sz)[:,:,None]
+        length = length[:,None,None]
+        assert list(time.shape) == [batch_sz, len_t, 1]
+        assert list(length.shape) == [batch_sz, 1, 1]
+        return (time < length)
 
     def process(self, data):
-        is_in_range = (t < data['length'])[:,None]
-        num_is_valid = is_in_range * (~np.isnan(data['numerical_ts']))
-        data['numerical_ts_forward'] = (
-            build_dt(data['numerical_ts'], is_valid, data['numerical_ts_dt']))
+        num_valid = self.make_within_length(data['numerical_ts'], data['length']) * (
+            ~np.isnan(data['numerical_ts']))
+        data['numerical_ts_dt_all'], data['numerical_ts_dt_all_delayed'] = self.build_dt(
+            data['numerical_ts'], num_valid, data['numerical_ts_dt'], also_delayed=True)
+        data['numerical_ts_forward'], data['numerical_ts_forward_delayed'] = (
+            self.build_impute_forward(data['numerical_ts'], num_valid,
+                self.means, also_delayed=True))
 
-        cat_is_valid = is_in_range * (data['categorical_ts'] >= 0)
+        cat_valid = self.make_within_length(data['categorical_ts'], data['length']) * (
+            data['categorical_ts'] >= 0)
+        data['categorical_ts_dt_all'], data['categorical_ts_dt_all_delayed'] = (
+            self.build_dt(data['categorical_ts'], cat_valid, data['categorical_ts_dt'],
+                          also_delayed=True))
+        data['categorical_ts_forward'], data['categorical_ts_forward_delayed'] = (
+            self.build_impute_forward(data['categorical_ts'], cat_valid,
+                self.most_common_cats, also_delayed=True))
+
+        batch_size = len(data['numerical_ts'])
+        for i in range(batch_size):
+            ex = to_tfrecords.example_from_data(dict(map(
+                lambda t: (t[0], t[1][i,...] if len(t[1].shape) > 1 else t[1][i:i+1]),
+                data.items())))
+            self.writer.write(ex.SerializeToString())
 
     def finish(self):
         self.writer.__exit__(None, None, None)
+
+
+class MostFrequentCategories(AddInterpolationInputs):
+    def __init__(self, dataset):
+        self.category_counters = list(collections.Counter() for _ in range(
+            int(dataset['categorical_ts'].get_shape()[2])))
+
+    def process(self, data):
+        cat_ts = data['categorical_ts']
+        cat_is_valid = self.make_within_length(cat_ts, data['length']) * (cat_ts >= 0)
+        for i, counter in enumerate(self.category_counters):
+            counter.update(cat_ts[cat_is_valid[:,:,i],i])
+
+    def finish(self):
+        most_common_cats = np.zeros([len(self.category_counters)], dtype=np.int)
+        for i, counter in enumerate(self.category_counters):
+            most_common_cats[i] = counter.most_common(1)[0][0]
+        pu.dump(most_common_cats, os.path.join(
+            os.path.dirname(FLAGS.dataset), 'most_common_cats.pkl.gz'))
 
 
 def main(_):
@@ -176,8 +249,8 @@ def main(_):
     dataset = build_input_machinery([FLAGS.dataset], feature_numbers, False, 1,
                                     BATCH_SIZE, None, 1)
 
-    Klass = getattr(globals(), FLAGS.command)
-    klass = Klass()
+    Klass = globals()[FLAGS.command]
+    klass = Klass(dataset)
 
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())

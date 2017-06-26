@@ -24,14 +24,56 @@ N_PROCESSORS = 8
 MIMIC_PATH = '../../mimic.csv.gz'
 STATIC_PATH = '../../static_patients.csv.gz'
 
-def context(example, key, dtype, iterable):
+EXAMPLE = {
+    'context': {
+        'icustay_id': 'int64',
+        'numerical_static': 'float',
+        'categorical_static': 'int64',
+        'numerical_ts_dt': 'float',
+        'categorical_ts_dt': 'float',
+    },
+    'sequence': {
+        'time_until_label': 'float',
+        'label': 'float',
+
+        'numerical_ts': 'float',
+        'numerical_ts_forward': 'float',
+        'numerical_ts_dt_all': 'int64',
+        'numerical_ts_forward_delayed': 'float',
+        'numerical_ts_dt_all_delayed': 'int64',
+
+        'categorical_ts': 'int64',
+        'categorical_ts_forward': 'int64',
+        'categorical_ts_dt_all': 'int64',
+        'categorical_ts_forward_delayed': 'int64',
+        'categorical_ts_dt_all_delayed': 'int64',
+
+        'treatments_ts': 'float',
+        'ventilation_ends': 'int64',
+    },
+}
+
+def _context(example, key, dtype, iterable):
     a = getattr(example.context.feature[key], dtype+'_list').value
     a.extend(iterable)
-def sequence(example, key, dtype, iterable):
+def _sequence(example, key, dtype, iterable):
     feature_list = example.feature_lists.feature_list[key].feature
     for row in iterable.reshape([len(iterable), -1]):
         a = getattr(feature_list.add(), dtype+'_list').value
         a.extend(row)
+
+def example_from_data(data):
+    funs = {'context': _context, 'sequence': _sequence}
+    example = tf.train.SequenceExample()
+    for kind in EXAMPLE:
+        for name, tp in EXAMPLE[kind].items():
+            if name not in data:
+                print("WARNING: no key `{:s}` present in `data`"
+                      .format(name))
+            else:
+                funs[kind](example, name, tp, data[name])
+    return example
+
 
 def get_headers(table):
     "Get the headers of a MIMIC sub-table"
@@ -214,21 +256,21 @@ def write_tfrecords(mimic, i, numerical_headers, categorical_headers, treatments
             categorical_static = static_data_categorical.loc[icustay_id].values
             assert len(categorical_static.shape) == 1
 
-            example = tf.train.SequenceExample()
+            data = {
+                'icustay_id': [icustay_id],
+                'numerical_static': numerical_static,
+                'categorical_static': categorical_static,
+                'numerical_ts_dt': numerical_ts_dt,
+                'categorical_ts_dt': categorical_ts_dt,
 
-            context(example, 'icustay_id', 'int64', [icustay_id])
-            context(example, 'numerical_static', 'float', numerical_static),
-            context(example, 'categorical_static', 'int64', categorical_static),
-            context(example, 'numerical_ts_dt', 'float', numerical_ts_dt),
-            context(example, 'categorical_ts_dt', 'float', categorical_ts_dt),
-
-            sequence(example, 'time_until_label', 'float', time_until_label),
-            sequence(example, 'label', 'float', label.astype(np.float32)),
-            sequence(example, 'numerical_ts', 'float', numerical_ts),
-            sequence(example, 'categorical_ts', 'int64', categorical_ts),
-            sequence(example, 'treatments_ts', 'float', treatments_ts.astype(np.float32)),
-            sequence(example, 'ventilation_ends', 'int64', ventilation_ends[:,0])
-
+                'time_until_label': time_until_label,
+                'label': label.astype(np.float32),
+                'numerical_ts': numerical_ts,
+                'categorical_ts': categorical_ts,
+                'treatments_ts': treatments_ts.astype(np.float32),
+                'ventilation_ends': ventilation_ends[:,0],
+            }
+            example = example_from_data(data)
             writer.write(example.SerializeToString())
 
             if n_examples > 10:
