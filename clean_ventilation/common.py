@@ -28,15 +28,17 @@ def build_impute_forward(d, d_valid, means, also_delayed=False):
     impute = np.copy(d)
     initial_valid = d_valid[0,:]
     batch_means = np.stack([means]*batch_size)
-    impute[0,initial_valid] = batch_means[initial_valid]
+    impute[0,~initial_valid] = batch_means[~initial_valid]
     for t in range(1, impute.shape[0]):
         to_carry_forward = ~d_valid[t,:]
         impute[t,to_carry_forward] = impute[t-1,to_carry_forward]
     impute_transposed = np.transpose(impute, [1,0,2])
+    assert not np.any(np.isnan(impute_transposed))
     if also_delayed:
         delayed_impute = np.empty(impute.shape, dtype=impute.dtype)
         delayed_impute[1:,:,:] = impute[:-1,:,:]
         delayed_impute[0,:,:] = batch_means
+        assert not np.any(np.isnan(delayed_impute))
         return impute_transposed, np.transpose(delayed_impute, [1,0,2])
     return impute_transposed
 

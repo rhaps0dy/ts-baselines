@@ -78,8 +78,8 @@ def validate_checkpoint(persist):
 
 def main(_):
     assert FLAGS.log_dir is not None
-    config = tf.ConfigProto(intra_op_parallelism_threads=FLAGS.n_threads)
-
+    config = tf.ConfigProto()
+    #config.gpu_options.per_process_gpu_memory_fraction = 0.96/2
     shuffle = True
     feature_numbers = pu.load(os.path.join(FLAGS.dataset, 'feature_numbers.pkl.gz'))
     print(feature_numbers)

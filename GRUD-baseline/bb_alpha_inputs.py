@@ -93,6 +93,7 @@ def layer(inputs, num_units, trainable, prior_variance=1.0, nlin=tf.nn.relu,
         ]
         for tensor in log_f_Wb:
             f = tf.check_numerics(tf.expand_dims(tensor, axis=1), "f_W")
+            f = tf.expand_dims(tensor, axis=1)
             tf.add_to_collection('f_W_components', f)
 
         log_Zq = [
@@ -106,14 +107,18 @@ def layer(inputs, num_units, trainable, prior_variance=1.0, nlin=tf.nn.relu,
 
 @add_variable_scope(name="log_likelihood")
 def make_log_likelihood(preds, labels, n_outputs, log_noise, noise_var):
+    diffs = labels-preds
+    diffs = tf.where(tf.is_nan(diffs), tf.zeros_like(diffs), diffs)
+    z_distances = diffs**2./noise_var
+    # Marginal likelihood of the existing distances
     ll = -0.5*(n_outputs*math.log(2*math.pi) +
                # Ordinarily we would take `log |noise|`, where || is
                # determinant. Since `noise` is a diagonal matrix, the
                # determinant is just multiplying its entries. However we have
                # `log(noise)` instead, which means we can just take the sum of
                # it all.
-               tf.reduce_sum(log_noise) + tf.reduce_sum(
-                   (labels-preds)**2./noise_var, axis=2))
+               tf.reduce_sum(log_noise) + tf.reduce_sum(z_distances, axis=2))
+    ll = tf.check_numerics(ll, "ll")
     return ll
 
 
@@ -158,6 +163,7 @@ def model(inputs, labels, N, num_samples, layer_sizes, alpha=0.5,
                     alpha*(log_likelihood - log_f_W)
                 , axis=0)
             , axis=0))
+        energy = tf.check_numerics(energy, "energy")
         assert energy.get_shape() == [], "Energy is a scalar"
 
         mean_prediction = tf.reduce_mean(preds, axis=0, name="mean_prediction")

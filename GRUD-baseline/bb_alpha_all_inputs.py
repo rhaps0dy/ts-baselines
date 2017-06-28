@@ -13,6 +13,7 @@ if __name__ == '__main__':
     flags = tf.app.flags
     flags.DEFINE_string('command', 'train',
                         'What to do [train, validate, profile_training]')
+    flags.DEFINE_string('load_file', '', 'What file to load for validating?')
     flags.DEFINE_integer('batch_size', 64, 'batch size for training')
     flags.DEFINE_integer('num_samples', 16, 'samples to estimate expectation')
     flags.DEFINE_float('learning_rate', 0.001, 'learning rate for ADAM')
@@ -36,6 +37,8 @@ FLAGS = tf.app.flags.FLAGS
 
 def main(_):
     assert FLAGS.log_dir is not None
+    config = tf.ConfigProto()
+    config.gpu_options.per_process_gpu_memory_fraction = 0.9/2
     shuffle = True
     dataset_dir = os.path.dirname(FLAGS.training_set)
     feature_numbers = pu.load(os.path.join(dataset_dir, 'feature_numbers.pkl.gz'))
@@ -67,9 +70,10 @@ def main(_):
     means_y = (whiten['values']['num_labels'] / whiten['counts']['num_labels']).astype(np.float32)
     stddevs_y = whiten['stddevs']['num_labels'].astype(np.float32)
 
-    def build_model(inputs_dict):
-        with tf.variable_scope("preprocessing"):
+    def build_model(inputs_dict, reuse=None):
+        with tf.variable_scope("preprocessing", reuse=reuse):
             inputs = tf.concat([inputs_dict['num_forward'], inputs_dict['num_ts']], axis=1)
+            inputs = tf.check_numerics(inputs, "inputs")
         m = bba.model(inputs,
                       inputs_dict['num_labels'],
                       N=whiten['total_n'],
@@ -82,27 +86,30 @@ def main(_):
                       mean_y=means_y,
                       std_X=stddevs_X,
                       std_y=stddevs_y,
-                      name="num_all")
+                      name="num_all",
+                      reuse=reuse)
         return m
 
     m = build_model(training)
     if FLAGS.command == 'validate':
-        v_m = build_model(validation)
+        v_m = build_model(validation, reuse=True)
         mse = {}
         mse_ph = {}
         log_likelihood = {}
         log_likelihood_ph = {}
+        actual_batch_size = {}
         _summaries = []
         with tf.variable_scope('metrics'):
             for name, mdl, inputs_dict in [('training', m, training), ('validation', v_m, validation)]:
-                print("LABELS SHAPE:", inputs_dict['labels'].get_shape())
-                print("SAMPLES SHAPE:", mdl['mean_prediction'].get_shape())
-                mse[name] = tf.reduce_mean(tf.squared_difference(mdl['mean_prediction'], inputs_dict['labels']))
+                distances = tf.reduce_sum(tf.squared_difference(
+                    mdl['mean_prediction'], inputs_dict['num_labels']), axis=1)
+                mse[name] = tf.reduce_mean(distances, axis=0)
                 mse_ph[name] = tf.placeholder(dtype=tf.float32, shape=[], name="{:s}/mse".format(name))
                 _summaries.append(tf.summary.scalar('{:s}/mse'.format(name), mse_ph[name]))
-                log_likelihood[name] = mdl['log_likelihood']
+                log_likelihood[name] = tf.reduce_sum(mdl['log_likelihood'], axis=0)
                 log_likelihood_ph[name] = tf.placeholder(dtype=tf.float32, shape=[], name="{:s}/log_likelihood".format(name))
                 _summaries.append(tf.summary.scalar('{:s}/log_likelihood'.format(name), log_likelihood_ph[name]))
+                actual_batch_size[name] = tf.shape(mdl['mean_prediction'])[0]
             validation_summaries = tf.summary.merge(_summaries)
             del _summaries
 
@@ -111,7 +118,7 @@ def main(_):
                 .minimize(m['energy'], global_step=global_step))
 
     saver = tf.train.Saver(max_to_keep=0)
-    with tf.variable_scope('summaries'):
+    with tf.variable_scope('metrics'):
         loss_ph = tf.placeholder(shape=[], dtype=tf.float32)
         training_summary = tf.summary.scalar('training/loss', loss_ph)
 
@@ -132,7 +139,7 @@ def main(_):
         d = {loss_ph: 0.0}
 
         validate_checkpoint_persist = {}
-        with sv.managed_session() as sess:
+        with sv.managed_session(config=config) as sess:
             sv.loop(300, train.validate_checkpoint, args=(validate_checkpoint_persist,))
             for step in tqdm(it.count(1)):
                 if sv.should_stop():
@@ -147,7 +154,8 @@ def main(_):
             sv.stop()
 
     elif FLAGS.command == 'validate':
-        with tf.Session() as sess:
+        print("DOING VALIDATE")
+        with tf.Session(config=config) as sess:
             sess.run(tf.global_variables_initializer())
             sess.run(tf.local_variables_initializer())
 
@@ -163,11 +171,11 @@ def main(_):
                     for step in range(n_steps):
                         if coord.should_stop():
                             break
-                        _mse, _ll = sess.run([mse[name], log_likelihood[name]], d)
-                        assert len(_mse) == FLAGS.batch_size, "YOU MUST ACCOUNT FOR DIFFERENT-SIZED BATCHES IN MEANS"
+                        _mse, _ll, _bs = sess.run([mse[name], log_likelihood[name],
+                                                   actual_batch_size[name]])
+                        assert _bs == FLAGS.batch_size, "YOU MUST ACCOUNT FOR DIFFERENT-SIZED BATCHES IN MEANS"
                         mse_values[name] += _mse/n_steps
-                        log_likelihood_values[name] += _ll/n_steps
-                        print("Done {:d}th {:s} evaluation step".format(step, name))
+                        log_likelihood_values[name] += _ll
                 except tf.errors.OutOfRangeError:
                     pass
 
@@ -183,7 +191,7 @@ def main(_):
             for name in mse_values.keys():
                 feed_dict[mse_ph[name]] = mse_values[name]
                 feed_dict[log_likelihood_ph[name]] = log_likelihood_values[name]
-            s, t = sess.run([summaries, global_step], feed_dict)
+            s, t = sess.run([validation_summaries, global_step], feed_dict)
             summary_writer.add_summary(s, t)
 
     else:

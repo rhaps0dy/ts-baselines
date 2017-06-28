@@ -81,7 +81,8 @@ def main(_):
     Klass = {'Means': Means, 'Stddevs': Stddevs}[FLAGS.command]
     klass = Klass(dataset, feature_numbers)
 
-    with tf.Session() as sess:
+    config = tf.ConfigProto(device_count = {'GPU': 0})
+    with tf.Session(config=config) as sess:
         sess.run(tf.global_variables_initializer())
         sess.run(tf.local_variables_initializer())
         coord = tf.train.Coordinator()
