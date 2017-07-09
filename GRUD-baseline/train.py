@@ -160,7 +160,7 @@ def main(_):
         training_summary = tf.summary.scalar('training/loss', loss_ph)
 
     if FLAGS.command == 'train':
-        def load_num_model(i):
+        def load_num_model():
             num_dir = os.path.join(FLAGS.interpolation, 'trained',
                                     'num_{:d}'.format(i))
             num_ckpt = pu.load(os.path.join(num_dir, 'validated_best.pkl'))
@@ -176,8 +176,7 @@ def main(_):
         if FLAGS.model == 'GRUD' or FLAGS.impute_as_zeros:
             num_savers = []
         else:
-            num_savers = list(map(load_num_model,
-                              range(feature_numbers['numerical_ts'])))
+            num_savers = [load_num_model()]
 
         sv = tf.train.Supervisor(is_chief=True,
                                 logdir=FLAGS.log_dir,

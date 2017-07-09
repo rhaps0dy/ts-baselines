@@ -103,7 +103,8 @@ def main(_):
             for name, mdl, inputs_dict in [('training', m, training), ('validation', v_m, validation)]:
                 distances = tf.reduce_sum(tf.squared_difference(
                     mdl['mean_prediction'], inputs_dict['num_labels']), axis=1)
-                mse[name] = tf.reduce_mean(distances, axis=0)
+                mse[name] = tf.reduce_mean(tf.where(
+                    tf.isnan(distances), tf.zeros_like(distances), distances), axis=0)
                 mse_ph[name] = tf.placeholder(dtype=tf.float32, shape=[], name="{:s}/mse".format(name))
                 _summaries.append(tf.summary.scalar('{:s}/mse'.format(name), mse_ph[name]))
                 log_likelihood[name] = tf.reduce_sum(mdl['log_likelihood'], axis=0)

@@ -95,3 +95,4 @@ model
 *.tfrecords
 
 .DS_Store
+*.unison.tmp

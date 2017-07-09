@@ -3,7 +3,6 @@ import pickle_utils as pu
 import numpy as np
 import itertools as it
 import functools
-import math
 import os
 from tqdm import tqdm
 
@@ -97,7 +96,7 @@ def layer(inputs, num_units, trainable, prior_variance=1.0, nlin=tf.nn.relu,
             tf.add_to_collection('f_W_components', f)
 
         log_Zq = [
-            .5*tf.reduce_sum(tf.log((2*math.pi)*param_v)),
+            .5*tf.reduce_sum(tf.log((2*np.pi)*param_v)),
             tf.reduce_sum(param_m_v*param_m),
         ]
         for z in log_Zq:
@@ -106,18 +105,33 @@ def layer(inputs, num_units, trainable, prior_variance=1.0, nlin=tf.nn.relu,
     return out
 
 @add_variable_scope(name="log_likelihood")
-def make_log_likelihood(preds, labels, n_outputs, log_noise, noise_var):
+def make_log_likelihood(preds, labels, log_noise, noise_var, condition=None,
+                        noise_condition=None):
     diffs = labels-preds
-    diffs = tf.where(tf.is_nan(diffs), tf.zeros_like(diffs), diffs)
-    z_distances = diffs**2./noise_var
+    if condition is None:
+        condition = tf.is_nan(diffs)
+    if noise_condition is None:
+        noise_condition = condition
+
+    # TODO: fill log_noise to the shape of diffs if it is not already
+    assert diffs.get_shape()[-1] == log_noise.get_shape()[-1] \
+        and len(diffs.get_shape()) == len(log_noise.get_shape())
+    assert repr(log_noise.get_shape()) == repr(noise_var.get_shape())
+
+    diffs = tf.where(condition, tf.zeros_like(diffs), diffs)
+    dropped_log_noise = tf.where(noise_condition, tf.zeros_like(log_noise), log_noise)
+    mahalanobis_dist = tf.reduce_sum(diffs**2./noise_var, axis=-1)
+    mahalanobis_dist = tf.check_numerics(mahalanobis_dist, "mahalanobis_dist")
+    n_outputs = tf.reduce_sum(tf.to_float(condition), axis=-1)
     # Marginal likelihood of the existing distances
-    ll = -0.5*(n_outputs*math.log(2*math.pi) +
-               # Ordinarily we would take `log |noise|`, where || is
-               # determinant. Since `noise` is a diagonal matrix, the
-               # determinant is just multiplying its entries. However we have
-               # `log(noise)` instead, which means we can just take the sum of
-               # it all.
-               tf.reduce_sum(log_noise) + tf.reduce_sum(z_distances, axis=2))
+    # ---
+    # Ordinarily we would take `log |noise|`, where || is determinant. Since
+    # `noise` is a diagonal matrix, the determinant is just multiplying its
+    # entries. However we have `log(noise)` instead, which means we can just
+    # take the sum of it all.
+    n_outs = n_outputs*np.log(2*np.pi)
+    ll = -0.5*(n_outs + tf.reduce_sum(dropped_log_noise, axis=-1) +
+               mahalanobis_dist)
     ll = tf.check_numerics(ll, "ll")
     return ll
 
@@ -150,14 +164,13 @@ def model(inputs, labels, N, num_samples, layer_sizes, alpha=0.5,
     noise_var = tf.exp(log_noise)
     noise_std = tf.sqrt(noise_var)
     if trainable:
-        log_likelihood = make_log_likelihood(preds, labels, n_outputs,
-                                             log_noise, noise_var)
+        log_likelihood = make_log_likelihood(preds, labels, log_noise, noise_var)
 
         log_f_W = (1/N) * tf.add_n(tf.get_collection('f_W_components'))
         log_Zq = tf.add_n(tf.get_collection('Z_q_components'))
 
         # Eq 12 BB-alpha, 9-11 Depeweg
-        energy = -log_Zq + (N/alpha)*(math.log(num_samples) -
+        energy = -log_Zq + (N/alpha)*(np.log(num_samples) -
             tf.reduce_mean(
                 tf.reduce_logsumexp(
                     alpha*(log_likelihood - log_f_W)
@@ -173,6 +186,7 @@ def model(inputs, labels, N, num_samples, layer_sizes, alpha=0.5,
                                 name="max_prediction")
 
         results['energy'] = energy
+        # TODO: log_likelihood must be summed
         results['log_likelihood'] = tf.reduce_mean(log_likelihood, axis=0)
         results['mean_prediction'] = mean_prediction
         results['min_prediction'] = min_prediction
