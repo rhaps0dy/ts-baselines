@@ -74,7 +74,11 @@ def _gmm_impute(m, inputs, n_impute=100):
             # $\tau$ in "Imputation through finite Gaussian mixture models" (Di
             # Zio et al., 2007)
             d['weights'] = m['weights'] * g_pdf
-            d['weights'] /= np.sum(d['weights'], axis=0, keepdims=True)
+            normaliser = np.sum(d['weights'], axis=0, keepdims=False)
+            if normaliser == 0.0:
+                d['weights'][...] = 1/d['weights'].shape[-1]
+            else:
+                d['weights'] /= normaliser
 
             K_12 = mask_matrix(m['covariances'],mask,~mask)
             K_22 = mask_matrix(m['covariances'],~mask,~mask)

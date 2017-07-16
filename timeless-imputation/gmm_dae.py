@@ -116,6 +116,10 @@ def tf_gmm_impute(_inputs, GMM):
                    false_fn=conditional_dist,
                    strict=True)
 
+#@add_variable_scope(name="autoencoder")
+def autoencoder(inputs, targets):
+    return inputs
+
 
 @add_variable_scope(name="gmm_dae_model")
 def gmm_dae_model(inputs, GMM, inputs_drop_prob):
@@ -133,7 +137,9 @@ def gmm_dae_model(inputs, GMM, inputs_drop_prob):
                                   parallel_iterations=10,
                                   back_prop=False,
                                   name="preimputed_inputs")
-    return preimputed_inputs
+
+    outputs, loss = autoencoder(preimputed_inputs, inputs)
+    return outputs
 
 
 def gmm_dae_impute(log_dir, dataset, GMM, n_impute=100):
