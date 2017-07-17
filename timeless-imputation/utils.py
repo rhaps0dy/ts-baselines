@@ -21,31 +21,60 @@ parallel = importr('parallel')
 n_cores = parallel.detectCores()
 doParallel.registerDoParallel(parallel.makeCluster(n_cores))
 
-__all__ = ['rmse', 'mean_rmse', 'gondara_rmse_sum', 'mcar_missing_rows',
-           'mcar_missing_total', 'normalise_dataframes', 'impute_mice',
-           'impute_missforest', 'df_py2ri', 'NA_INT32']
+__all__ = ['rmse', 'mean_rmse', 'gondara_rmse_sum', 'mcar_rows', 'mcar_total',
+           'normalise_dataframes', 'impute_mice', 'impute_missforest',
+           'df_from_R', 'df_to_R', 'NA_int32']
 
-NA_INT32 = -(1 << 31)
-
-
-def df_py2ri(df):
-    ordered_keys = filter(lambda k: df[k].dtype == np.int32, df.keys())
-    return base.transform(df, **dict((k, base.as_ordered(df[k]))
-                                     for k in ordered_keys))
+NA_int32 = -(1 << 31)
 
 
-def df_ri2py(rdf):
-    df = ri2py(rdf)
-    for k in df.keys():
-        assert df[k].dtype not in [np.float32, np.int64], \
-            "f32 and i64 not handled"
-        if df[k].dtype == np.object:
-            df[k] = df[k].astype('category')
-        if df[k].dtype == np.int32:
-            assert not np.any(df[k].values == 0), \
-                "Ordered variables should start at 1"
-            df[k].values[df[k].values < 0] = 0
-    return df
+def df_to_R(dataset, name):
+    df, category_keys = dataset
+    int_keys = list(filter(lambda k: (df[k].dtype == np.int32 and
+                                      k not in category_keys), df.keys()))
+    R.assign(name, df)
+    keys = int_keys + category_keys
+    for i in range(0, len(keys), 10):
+        R("{:s} <- transform({:s}, {:s})".format(
+            name, name, ", ".join(
+                "{0:s}=as.ordered({1:s}${0:s})".format(k, name)
+                for k in keys[i:i + 10])))
+    for k in category_keys:
+        R('class({:s}${:s}) <- "factor"'.format(name, k))
+
+
+def df_from_R(name, more_than_one_value=False):
+    # First pass: get which keys are objects
+    df = R(name)
+    category_keys = list(filter(lambda k: df[k].dtype == np.object, df.keys()))
+
+    # Second pass: get these keys as ordered, to get the NAs correctly
+    df = R("transform({:s}, {:s})".format(name, ", ".join(
+        "{:s}=as.ordered({:s}${:s})".format(k, name, k)
+        for k in category_keys)))
+    assert all(df[k].dtype in [np.int32, np.float64] for k in df.keys())
+
+    for k in filter(lambda k: df[k].dtype == np.int32, df.keys()):
+        unique = list(df[k].unique())
+        if NA_int32 in unique:
+            unique.remove(NA_int32)
+        unique.sort()
+
+        msg = ""
+        if unique[0] != 1:
+            msg += "categories start counting at 1"
+        if more_than_one_value and len(unique) <= 1:
+            msg += "; must have more than 1 possible value"
+        for i in range(1, len(unique)):
+            if unique[i] != unique[i-1]+1:
+                msg += "; must be counting up contiguously"
+                break
+        if msg != "":
+            print(k, msg)
+            df = df.drop(k, axis=1)
+            category_keys.remove(k)
+
+    return df, category_keys
 
 
 def rmse(mask_missing, original_df, multiple_imputed_df):
@@ -97,16 +126,10 @@ def _type_aware_drop(dataset, missing_mask):
                            dataset.keys()))
     float_keys = list(filter(lambda k: dataset[k].dtype == np.float64,
                              dataset.keys()))
-    cat_keys = list(filter(lambda k: dataset[k].dtype.name == 'category',
-                           dataset.keys()))
-    m_df = pd.DataFrame(missing_mask, columns=list(dataset.keys()))
-    df_cats = dataset[cat_keys].copy()
-    for idx in zip(*np.nonzero(m_df[cat_keys].values)):
-        df_cats.iloc[idx] = None
+    m_df = pd.DataFrame(~missing_mask, columns=list(dataset.keys()))
     df = pd.concat([
-        dataset[int_keys].where(m_df[int_keys].values, other=NA_INT32),
+        dataset[int_keys].where(m_df[int_keys].values, other=NA_int32),
         dataset[float_keys].where(m_df[float_keys].values),
-        df_cats,
         ], axis=1)
     return df[dataset.keys()]
 
@@ -118,14 +141,14 @@ def mcar_rows(dataset, rows_missing=0.2, missing_row_loss=0.5):
     `rows_missing * missing_row_loss`"""
     example_mask = np.random.rand(dataset.shape[0]) < rows_missing
     row_mask = np.random.rand(*dataset.shape) < missing_row_loss
-    overall_mask = example_mask[:, np.newaxis]
-    return _type_aware_drop(dataset, row_mask*overall_mask)
+    overall_mask = example_mask[:, np.newaxis] & row_mask
+    return _type_aware_drop(dataset, overall_mask)
 
 
 def mcar_total(dataset, missing_proportion=0.5):
     "Make each cell of the dataset missing uniformly at random"
-    return _type_aware_drop(dataset,
-                            np.random.rand(*dataset.shape) < missing_proportion)
+    return _type_aware_drop(dataset, (np.random.rand(*dataset.shape)
+                                      < missing_proportion))
 
 
 def _rescale_dataframes(dataframes, mean, std, rescale_f):
@@ -167,19 +190,24 @@ def unnormalise_dataframes(mean_std, dataframes):
 def impute_mice(dataset, number_imputations=5, full_data=None):
     "Imputed dataset using MICE"
     del full_data
-    df = df_py2ri(dataset)
-    obj = mice.mice(df, m=number_imputations, maxit=100, method='pmm', seed=500)
-    return list(ri2py(mice.complete(obj, v))
-                for v in range(1, number_imputations + 1))
+    df_to_R(dataset, "df")
+    R("imputed_df <- mice(df, m={:d}, maxit=100, method='pmm', seed={:d})"
+      .format(number_imputations, 500))
+    dfs = []
+    for i in range(1, number_imputations + 1):
+        R("idf <- complete(imputed_df, {:d})".format(i))
+        dfs.append(df_from_R("idf")[0])
+    return dfs
 
 
 def impute_missforest(dataset, number_imputations=1, full_data=None):
     del full_data
     assert number_imputations == 1
-    if dataset.shape[1] < n_cores[0]:
+    if dataset[0].shape[1] < n_cores[0]:
         par = 'no'
     else:
         par = 'variables'
-    df = df_py2ri(dataset)
-    mf_imp = missForest.missForest(df, parallelize=par)
-    return [ri2py(mf_imp[0])]
+    df_to_R(dataset, "df")
+    R("imputed_df <- missForest(df, parallelize='{:s}')".format(par))
+    df, cat_idx = df_from_R("imputed_df$ximp")
+    return [df]
