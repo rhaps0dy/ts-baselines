@@ -193,7 +193,8 @@ def benchmark(impute_methods, datasets, do_not_compute=False,
                         table['total_cats'][algo_name][norm_type][data_name]\
                             [ampute_fun_name][str(proportion)] = total
                         table['PFC'][algo_name][norm_type][data_name]\
-                            [ampute_fun_name][str(proportion)] = wrong/total
+                            [ampute_fun_name][str(proportion)] = (
+                                np.nan if total==0 else wrong/total)
 
     def get_multiindex(d, levels=3):
         if levels == 1:

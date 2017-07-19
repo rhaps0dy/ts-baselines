@@ -199,7 +199,7 @@ def impute(log_path, dataset, full_data, number_imputations=5,
     test_cat = test_df[input_layer["cat_idx"]].values
 
     train_op = optimizer(learning_rate).minimize(loss)
-    saver = tf.train.Saver(max_to_keep=0)
+    saver = tf.train.Saver(max_to_keep=10)
     training_summary = tf.summary.scalar("loss/training", loss)
     validation_summary = tf.summary.scalar("loss/validation", loss)
     rmse_ph = tf.placeholder(tf.float64, shape=[])
@@ -211,16 +211,23 @@ def impute(log_path, dataset, full_data, number_imputations=5,
     def compute_impute(sess):
         net_outs = []
         for imp_i in range(number_imputations):
-            imp_d_num, imp_d_num_mask = preimpute_without_model(
-                rs, test_num, *num_pi, test=True)
-            imp_d_cat, imp_d_cat_mask = preimpute_without_model(
-                rs, test_cat, *cat_pi, test=True)
-            num_preds, cat_preds = sess.run([loss_preds["num_preds"],
-                                             loss_preds["cat_preds"]], {
-                    input_layer["num_inputs"]: imp_d_num,
-                    input_layer["cat_inputs"]: imp_d_cat,
-                    input_layer["num_mask_inputs"]: imp_d_num_mask,
-                    input_layer["cat_mask_inputs"]: imp_d_cat_mask})
+            feed_dict = {}
+            to_run = [[], []]
+            if "num_inputs" in input_layer:
+                imp_d_num, imp_d_num_mask = preimpute_without_model(
+                    rs, test_num, *num_pi, test=True)
+                feed_dict[input_layer["num_inputs"]] = imp_d_num
+                feed_dict[input_layer["num_mask_inputs"]] = imp_d_num_mask
+                to_run[0] = loss_preds["num_preds"]
+            if "cat_inputs" in input_layer:
+                imp_d_cat, imp_d_cat_mask = preimpute_without_model(
+                    rs, test_cat, *cat_pi, test=True)
+                feed_dict[input_layer["cat_inputs"]] = imp_d_cat
+                feed_dict[input_layer["cat_mask_inputs"]] = imp_d_cat_mask
+                to_run[1] = loss_preds["cat_preds"]
+
+            num_preds, cat_preds = sess.run(to_run,
+                                            feed_dict)
             net_outs.append(pd.concat([
                 pd.DataFrame(num_preds, columns=input_layer["num_idx"]),
                 pd.DataFrame(cat_preds, columns=input_layer["cat_idx"])
@@ -246,19 +253,22 @@ def impute(log_path, dataset, full_data, number_imputations=5,
         time_since_last_log = time.time()
         last_validation_loss = np.inf
         remaining_patience = patience
+        just_restored = False
 
         ckpt = tf.train.latest_checkpoint(log_path)
         if ckpt is not None:
             print("Restoring model from", ckpt)
             saver.restore(sess, ckpt)
             remaining_patience = 0
+            just_restored = True
         del ckpt
 
         for step in itertools.count(0):
             if remaining_patience <= 0:
-                print("Saving checkpoint...")
-                saver.save(sess, os.path.join(log_path, 'ckpt'),
-                           global_step=step)
+                if not just_restored:
+                    print("Saving checkpoint...")
+                    saver.save(sess, os.path.join(log_path, 'ckpt'),
+                               global_step=step)
                 break
 
             i = step % num_batches
@@ -311,7 +321,7 @@ def impute(log_path, dataset, full_data, number_imputations=5,
                             test_df, full_data[0], net_outs)
                         print("The PFC is:", pfc)
                     else:
-                        pfc = np.nan
+                        pfc = (np.nan, np.nan)
                     s = sess.run(test_summary, {rmse_ph: rmse,
                                                 pfc_ph: pfc[0]/pfc[1]})
                     summary_writer.add_summary(s, step)

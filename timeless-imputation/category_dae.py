@@ -150,7 +150,7 @@ def preprocess_dataframe(dataframe, input_layer):
 
 def postprocess_dataframe(dataframe, input_layer):
     """Restores sparse 1-based categories. Re-adds categories with one value."""
-    for c, m in [input_layer["cat_idx"], input_layer["_cat_maps"]]:
+    for c, m in input_layer["_cat_maps"].items():
         dataframe[c] = dataframe[c].map(m.__getitem__).astype(np.int32)
     return dataframe
 
