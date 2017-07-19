@@ -25,14 +25,16 @@ mlbench = importr("mlbench")
 __all__ = ['datasets', 'benchmark', 'memoize']
 
 
-def datasets():
+def datasets(exclude_labels=True):
     columns_excluded = {
-        "Ionosphere": ["Class"], # Class
-        "BostonHousing": ["medv"], # medv
-        "BreastCancer": ["Id", "Class"], # Class
+        "Ionosphere": (["Class"] if exclude_labels else []),
+        "BostonHousing": (["medv"] if exclude_labels else []),
+        "BreastCancer": ["Id"] + (["Class"] if exclude_labels else []),
         # "DNA": ["Class"], # Class
-        "Soybean": ["Class"], # Class; has missing values
-        "Servo": ["Class"], # Class
+        "Soybean": (["Class"] if exclude_labels else []),
+        "Servo": (["Class"] if exclude_labels else []),
+        "LetterRecognition": (["lettr"] if exclude_labels else []),
+        "Shuttle": (["Class"] if exclude_labels else []),
     }
     dfs = {}
     for name, excluded in columns_excluded.items():
@@ -82,7 +84,8 @@ def percentage_falsely_classified(amputed_data, full_data, imputed_data):
     return wrong, total
 
 
-def benchmark(impute_methods, datasets, path="impute_benchmark"):
+def benchmark(impute_methods, datasets, do_not_compute=False,
+              path="impute_benchmark"):
     if not os.path.exists(path):
         os.mkdir(path)
 
@@ -98,7 +101,7 @@ def benchmark(impute_methods, datasets, path="impute_benchmark"):
                     (memoize(utils.mcar_total), 'MCAR_total'),
                     (memoize(do_mcar_rows), 'MCAR_rows')]:
                 for proportion in [.1, .3, .5, .7, .9]:
-                    for norm_type in ['mean_std', 'min_max']:
+                    for norm_type in ['mean_std']:  # 'min_max']:
                         amputed_name = '{:s}_{:s}_{:.1f}'.format(
                                 data_name, ampute_fun_name, proportion)
                         amputed_data = ampute_fun(
@@ -109,20 +112,45 @@ def benchmark(impute_methods, datasets, path="impute_benchmark"):
                             amputed_data, full_data, method=norm_type)
                         _ad, _fd = _data
 
-                        if algo_name == 'MissForest' and proportion == .9 and data_name == "Soybean" and ampute_fun_name == 'MCAR_total':
-                            table[algo_name]['RMSE'][norm_type][data_name]\
+                        if (algo_name == 'MissForest' and proportion == .9 and
+                           data_name == "Soybean" and
+                           ampute_fun_name == 'MCAR_total') or (
+                               do_not_compute and not
+                               os.path.exists(os.path.join(
+                                   path, 'imputed_{:s}_{:s}.pkl.gz'.format(
+                                       algo_name, amputed_name)))
+                               and not os.path.exists(os.path.join(
+                                   path, 'imputed_{:s}_{:s}/checkpoint'.format(
+                                       algo_name, amputed_name)))):
+                            table['RMSE'][algo_name][norm_type][data_name]\
                                 [ampute_fun_name][str(proportion)] = np.nan
-                            table[algo_name]['NRMSE'][norm_type][data_name]\
+                            table['NRMSE'][algo_name][norm_type][data_name]\
                                 [ampute_fun_name][str(proportion)] = np.nan
-                            table[algo_name]['total_cats'][norm_type][data_name]\
+                            table['total_cats'][algo_name][norm_type][data_name]\
                                 [ampute_fun_name][str(proportion)] = np.nan
-                            table[algo_name]['PFC'][norm_type][data_name]\
+                            table['PFC'][algo_name][norm_type][data_name]\
                                 [ampute_fun_name][str(proportion)] = np.nan
                             continue
                         else:
-                            _id = impute_f(
-                                os.path.join(path, 'imputed_{:s}_{:s}'.format(
-                                    algo_name, amputed_name)), (_ad, cat_keys))
+                            try:
+                                _id = impute_f(
+                                    os.path.join(path, 'imputed_{:s}_{:s}'.format(
+                                        algo_name, amputed_name)), (_ad, cat_keys),
+                                    full_data=(_fd, cat_keys))
+                            except Exception as e:
+                                if do_not_compute:
+                                    table['RMSE'][algo_name][norm_type][data_name]\
+                                        [ampute_fun_name][str(proportion)] = np.nan
+                                    table['NRMSE'][algo_name][norm_type][data_name]\
+                                        [ampute_fun_name][str(proportion)] = np.nan
+                                    table['total_cats'][algo_name][norm_type][data_name]\
+                                        [ampute_fun_name][str(proportion)] = np.nan
+                                    table['PFC'][algo_name][norm_type][data_name]\
+                                        [ampute_fun_name][str(proportion)] = np.nan
+                                    continue
+                                else:
+                                    raise e
+
 
                         imputed_data = utils.unnormalise_dataframes(moments, _id)
                         # Normalised RMSE:
@@ -130,9 +158,9 @@ def benchmark(impute_methods, datasets, path="impute_benchmark"):
                         # over the missing values only
                         numerical_keys = list(moments[0].keys())
                         if len(numerical_keys) == 0:
-                            table[algo_name]['RMSE'][norm_type][data_name]\
+                            table['RMSE'][algo_name][norm_type][data_name]\
                                 [ampute_fun_name][str(proportion)] = np.nan
-                            table[algo_name]['NRMSE'][norm_type][data_name]\
+                            table['NRMSE'][algo_name][norm_type][data_name]\
                                 [ampute_fun_name][str(proportion)] = np.nan
                         else:
                             adv = amputed_data[numerical_keys].values
@@ -145,7 +173,7 @@ def benchmark(impute_methods, datasets, path="impute_benchmark"):
                             nrmse = (np.mean((fdv-mean_idv)**2) / np.var(fdv))**.5
                             assert len(nrmse.shape) == 0
 
-                            table[algo_name]['NRMSE'][norm_type][data_name]\
+                            table['NRMSE'][algo_name][norm_type][data_name]\
                                 [ampute_fun_name][str(proportion)] = nrmse
 
                             # RMSE of 0-1 normalised data
@@ -155,16 +183,16 @@ def benchmark(impute_methods, datasets, path="impute_benchmark"):
                                 *(i[numerical_keys] for i in imputed_data),
                                 method='min_max')[0]
 
-                            table[algo_name]['RMSE'][norm_type][data_name]\
+                            table['RMSE'][algo_name][norm_type][data_name]\
                                 [ampute_fun_name][str(proportion)] = utils.mean_rmse(
                                     np.isnan(rmse_ad.values), rmse_fd.values,
                                     list(d.values for d in rmse_id))
 
                         wrong, total = percentage_falsely_classified(
                             amputed_data, full_data, imputed_data)
-                        table[algo_name]['total_cats'][norm_type][data_name]\
+                        table['total_cats'][algo_name][norm_type][data_name]\
                             [ampute_fun_name][str(proportion)] = total
-                        table[algo_name]['PFC'][norm_type][data_name]\
+                        table['PFC'][algo_name][norm_type][data_name]\
                             [ampute_fun_name][str(proportion)] = wrong/total
 
     def get_multiindex(d, levels=3):
@@ -204,7 +232,24 @@ def dataframe_like(dataframe, new_values):
 
 
 if __name__ == '__main__':
+    import denoising_ae
+    import tensorflow as tf
     np.seterr(all='raise')
     dsets = datasets()
-    baseline = benchmark({'MICE': memoize(utils.impute_mice),
-                          'MissForest': memoize(utils.impute_missforest)}, dsets)
+    #baseline = benchmark({'MICE': memoize(utils.impute_mice),
+    #                      'MissForest': memoize(utils.impute_missforest)}, dsets)
+    dsets = dict(filter(lambda k: k[0] == 'LetterRecognition', dsets.items()))
+    benchmark({'MLP_2x256_SGD': lambda log_path, dataset, full_data: denoising_ae.impute(
+        log_path, dataset, full_data,
+        number_imputations=64,
+        number_layers=2,
+        hidden_units=256,
+        seed=0,
+        init_type=denoising_ae.SELU_initializer,
+        batch_size=256,
+        nlin=tf.nn.tanh,
+        residual=False,
+        patience=10,
+        learning_rate=1e-4,
+        corruption_prob=0.5,
+        optimizer=tf.train.GradientDescentOptimizer)}, dsets)
