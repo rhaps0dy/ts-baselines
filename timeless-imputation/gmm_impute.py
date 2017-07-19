@@ -31,13 +31,13 @@ def gaussian_pdf(inputs, means, covs):
     _mask = ~np.isnan(inputs)
     n_features = np.sum(_mask, axis=0, keepdims=True)
 
-    diffs = inputs[_mask] - means[:,_mask]
+    diffs = inputs[_mask] - means[:, _mask]
     right_diffs = np.expand_dims(diffs, axis=2)
     left_diffs = np.expand_dims(diffs, axis=1)
     _covs = mask_matrix(covs, _mask, _mask)
     exponent = left_diffs @ np.linalg.inv(_covs) @ right_diffs
 
-    exponent = -.5 * np.squeeze(exponent, axis=[2,3])
+    exponent = -.5 * np.squeeze(exponent, axis=[1, 2])
     divider = ((2 * np.pi)**n_features * np.linalg.det(_covs))**(-.5)
     g_pdf = divider * np.exp(exponent)
     return g_pdf
