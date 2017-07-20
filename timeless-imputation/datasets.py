@@ -123,7 +123,7 @@ def benchmark(impute_methods, datasets, do_not_compute=False,
                                    path, 'imputed_{:s}_{:s}/checkpoint'.format(
                                        algo_name, amputed_name)))
                                and not os.path.exists(os.path.join(
-                                   path, 'imputed_{:s}_{:s}/imputed.pkl.gz'.format(
+                                   path, 'imputed_{:s}_{:s}/params.pkl.gz'.format(
                                        algo_name, amputed_name)))):
                             table['RMSE'][algo_name][norm_type][data_name]\
                                 [ampute_fun_name][str(proportion)] = np.nan
@@ -136,7 +136,8 @@ def benchmark(impute_methods, datasets, do_not_compute=False,
                             continue
                         else:
                             run_name = 'imputed_{:s}_{:s}'.format(algo_name, amputed_name)
-                            print("Computing ", run_name)
+                            if not do_not_compute:
+                                print("Computing ", run_name)
                             _id = impute_f(
                                 os.path.join(path, run_name), (_ad, cat_keys),
                                 full_data=(_fd, cat_keys))

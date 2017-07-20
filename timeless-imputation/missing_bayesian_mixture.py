@@ -179,10 +179,6 @@ def impute_bayes_gmm(log_path, dataset, number_imputations=100, full_data=None,
     if not os.path.exists(log_path):
         os.mkdir(log_path)
 
-    #save_file_path = os.path.join(log_path, 'imputed.pkl.gz')
-    #if os.path.exists(save_file_path):
-    #    return pu.load(save_file_path)
-
     df, cat_idx = dataset
     df = df.copy()
     naive_fillna = {}
@@ -199,25 +195,26 @@ def impute_bayes_gmm(log_path, dataset, number_imputations=100, full_data=None,
                 df[k] = df[k].astype(np.float64).where(not_NAs)
                 prev_int_keys.append(k)
 
-    keys = list(set(df.keys()) - set(naive_fillna))
+    keys = list(filter(lambda k: k not in naive_fillna,
+                       df.keys()))
     data = df[keys].values
-    save_file_path = os.path.join(log_path, 'params.pkl.gz')
-    if os.path.exists(save_file_path):
-        d = pu.load(save_file_path)
+    params_path = os.path.join(log_path, 'params.pkl.gz')
+    if os.path.exists(params_path):
+        d = pu.load(params_path)
     else:
         m = BayesianMixtureMissingData(n_components=n_components,
-                                   n_init=n_init,
-                                   init_params=init_params)
+                                       n_init=n_init,
+                                       init_params=init_params)
         m.fit(data)
         d = {}
         for attr in ['weights', 'means', 'covariances']:
             d[attr] = getattr(m, attr+'_')
+        pu.dump(d, params_path)
+        pu.dump(m, os.path.join(log_path, 'model.pkl.gz'))
         del m
 
     _id = gmm_impute._gmm_impute(d, data, n_impute=number_imputations)
     imputed_data = np.mean(_id, axis=0)
-    # imputed_data = data.copy()
-    # imputed_data[np.isnan(imputed_data)] = 1.0
 
     imputed_df = datasets.dataframe_like(df[keys], imputed_data)
     imputed_df[prev_int_keys] = imputed_df[prev_int_keys].apply(
@@ -226,8 +223,9 @@ def impute_bayes_gmm(log_path, dataset, number_imputations=100, full_data=None,
         df[k] = df[k].where(df[k] != utils.NA_int32, other=value)
     ret = [pd.concat([imputed_df, df[list(naive_fillna.keys())]],
                      axis=1)[df.keys()]]
-    pu.dump(d, os.path.join(log_path, "params.pkl.gz"))
-    pu.dump(ret, os.path.join(log_path, "imputed.pkl.gz"))
+    impute_path = os.path.join(log_path, "imputed.pkl.gz")
+    if not os.path.exists(impute_path):
+        pu.dump(ret, impute_path)
     return ret
 
 
@@ -259,10 +257,10 @@ if __name__ == 'OLD__main__':
 
 if __name__ == '__main__':
     _ds = datasets.datasets()
-    dsets = dict(filter(lambda t: t[0] in {"Ionosphere"},  # {"Shuttle", "Ionosphere", "BostonHousing"},
+    dsets = dict(filter(lambda t: t[0] in {"BostonHousing"},  # {"Shuttle", "Ionosphere", "BostonHousing"},
                         _ds.items()))
     baseline = datasets.benchmark({
-        'BGMM_50_fix': lambda p, d, full_data: impute_bayes_gmm(
+        'BGMM_10_3': lambda p, d, full_data: impute_bayes_gmm(
             p, d, full_data=full_data, number_imputations=100,
-            n_components=50)
+            n_components=20)
     }, dsets, do_not_compute=False)

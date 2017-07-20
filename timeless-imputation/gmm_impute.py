@@ -59,7 +59,7 @@ def mask_matrix(matrix, m1, m2):
     return out
 
 
-def _gmm_impute(m, inputs, n_impute=100, sample_impute=True):
+def _gmm_impute(m, inputs, n_impute=100, sample_impute=False):
     "Impute inputs using Gaussian Mixture Model m"
     if sample_impute:
         outputs = np.stack([inputs] * n_impute, axis=0)
