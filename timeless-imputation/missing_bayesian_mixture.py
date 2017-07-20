@@ -10,6 +10,7 @@ import pandas as pd
 import utils
 import datasets
 import pickle_utils as pu
+import os
 
 
 rpy2.robjects.numpy2ri.activate()
@@ -73,7 +74,7 @@ def _estimate_missing_gaussian_parameters(X, resp, means, covariances,
         # `dependent_means_offsetted` ought to be the dependent means
         # (dependent on the observed variables), offsetted by the next means.
         dependent_means_offsetted = centered_point[:, missing]
-        M = np.concatenate([np.linalg.cholesky(np.linalg.inv(cov)),
+        M = np.concatenate([np.linalg.cholesky(cov),
                             np.expand_dims(dependent_means_offsetted, 2)],
                            axis=2)
         mismis_covs = M @ M.transpose([0, 2, 1])
@@ -86,9 +87,6 @@ def _estimate_missing_gaussian_parameters(X, resp, means, covariances,
     next_covariances = next_covariances.sum(axis=0)
     for k in range(next_covariances.shape[0]):
         next_covariances[k].flat[::next_covariances.shape[1] + 1] += reg_covar
-    #next_covariances = np.stack([np.eye(covariances.shape[1])]*covariances.shape[0])
-    #next_covariances[:,0,1] = next_covariances[:,1,0] = 0.5
-    #next_covariances *= 0.2
     return nk, next_means, next_covariances
 
 
@@ -181,9 +179,9 @@ def impute_bayes_gmm(log_path, dataset, number_imputations=100, full_data=None,
     if not os.path.exists(log_path):
         os.mkdir(log_path)
 
-    save_file_path = os.path.join(log_path, 'imputed.pkl.gz')
-    if os.path.exists(save_file_path):
-        return pu.load(save_file_path)
+    #save_file_path = os.path.join(log_path, 'imputed.pkl.gz')
+    #if os.path.exists(save_file_path):
+    #    return pu.load(save_file_path)
 
     df, cat_idx = dataset
     df = df.copy()
@@ -203,13 +201,19 @@ def impute_bayes_gmm(log_path, dataset, number_imputations=100, full_data=None,
 
     keys = list(set(df.keys()) - set(naive_fillna))
     data = df[keys].values
-    m = BayesianMixtureMissingData(n_components=n_components,
+    save_file_path = os.path.join(log_path, 'params.pkl.gz')
+    if os.path.exists(save_file_path):
+        d = pu.load(save_file_path)
+    else:
+        m = BayesianMixtureMissingData(n_components=n_components,
                                    n_init=n_init,
                                    init_params=init_params)
-    m.fit(data)
-    d = {}
-    for attr in ['weights', 'means', 'covariances']:
-        d[attr] = getattr(m, attr+'_')
+        m.fit(data)
+        d = {}
+        for attr in ['weights', 'means', 'covariances']:
+            d[attr] = getattr(m, attr+'_')
+        del m
+
     _id = gmm_impute._gmm_impute(d, data, n_impute=number_imputations)
     imputed_data = np.mean(_id, axis=0)
     # imputed_data = data.copy()
@@ -223,7 +227,7 @@ def impute_bayes_gmm(log_path, dataset, number_imputations=100, full_data=None,
     ret = [pd.concat([imputed_df, df[list(naive_fillna.keys())]],
                      axis=1)[df.keys()]]
     pu.dump(d, os.path.join(log_path, "params.pkl.gz"))
-    pu.dump(ret, save_file_path)
+    pu.dump(ret, os.path.join(log_path, "imputed.pkl.gz"))
     return ret
 
 
@@ -255,7 +259,10 @@ if __name__ == 'OLD__main__':
 
 if __name__ == '__main__':
     _ds = datasets.datasets()
-    dsets = dict(filter(lambda t: t[0] in {"Shuttle", "Ionosphere", "BostonHousing"},
+    dsets = dict(filter(lambda t: t[0] in {"Ionosphere"},  # {"Shuttle", "Ionosphere", "BostonHousing"},
                         _ds.items()))
-    baseline = datasets.benchmark({'BayesGMM': datasets.memoize(impute_bayes_gmm),
-        }, dsets, do_not_compute=False)
+    baseline = datasets.benchmark({
+        'BGMM_50_fix': lambda p, d, full_data: impute_bayes_gmm(
+            p, d, full_data=full_data, number_imputations=100,
+            n_components=50)
+    }, dsets, do_not_compute=False)

@@ -121,6 +121,9 @@ def benchmark(impute_methods, datasets, do_not_compute=False,
                                        algo_name, amputed_name)))
                                and not os.path.exists(os.path.join(
                                    path, 'imputed_{:s}_{:s}/checkpoint'.format(
+                                       algo_name, amputed_name)))
+                               and not os.path.exists(os.path.join(
+                                   path, 'imputed_{:s}_{:s}/imputed.pkl.gz'.format(
                                        algo_name, amputed_name)))):
                             table['RMSE'][algo_name][norm_type][data_name]\
                                 [ampute_fun_name][str(proportion)] = np.nan
@@ -132,25 +135,11 @@ def benchmark(impute_methods, datasets, do_not_compute=False,
                                 [ampute_fun_name][str(proportion)] = np.nan
                             continue
                         else:
-                            try:
-                                _id = impute_f(
-                                    os.path.join(path, 'imputed_{:s}_{:s}'.format(
-                                        algo_name, amputed_name)), (_ad, cat_keys),
-                                    full_data=(_fd, cat_keys))
-                            except Exception as e:
-                                if do_not_compute:
-                                    table['RMSE'][algo_name][norm_type][data_name]\
-                                        [ampute_fun_name][str(proportion)] = np.nan
-                                    table['NRMSE'][algo_name][norm_type][data_name]\
-                                        [ampute_fun_name][str(proportion)] = np.nan
-                                    table['total_cats'][algo_name][norm_type][data_name]\
-                                        [ampute_fun_name][str(proportion)] = np.nan
-                                    table['PFC'][algo_name][norm_type][data_name]\
-                                        [ampute_fun_name][str(proportion)] = np.nan
-                                    continue
-                                else:
-                                    raise e
-
+                            run_name = 'imputed_{:s}_{:s}'.format(algo_name, amputed_name)
+                            print("Computing ", run_name)
+                            _id = impute_f(
+                                os.path.join(path, run_name), (_ad, cat_keys),
+                                full_data=(_fd, cat_keys))
 
                         imputed_data = utils.unnormalise_dataframes(moments, _id)
                         # Normalised RMSE:
@@ -232,7 +221,7 @@ def dataframe_like(dataframe, new_values):
                         columns=dataframe.columns)
 
 
-if __name__ == '__main__':
+if __name__ == '__mOOin__':
     import denoising_ae
     import tensorflow as tf
     np.seterr(all='raise')
@@ -254,3 +243,13 @@ if __name__ == '__main__':
         learning_rate=1e-4,
         corruption_prob=0.5,
         optimizer=tf.train.GradientDescentOptimizer)}, dsets)
+
+
+if __name__ == '__main__':
+    #dsets = {"LetterRecognition": datasets()["LetterRecognition"]}
+    _ds = datasets()
+    dsets = dict(filter(lambda t: t[0] in {"Shuttle", "Ionosphere", "BostonHousing"},
+                        _ds.items()))
+    baseline = benchmark({'MICE': memoize(utils.impute_mice),
+                          'MissForest': memoize(utils.impute_missforest),
+    }, dsets, do_not_compute=False)

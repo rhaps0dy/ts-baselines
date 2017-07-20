@@ -2,6 +2,7 @@
 
 import numpy as np
 
+
 def prune_infinite_gmm(X, m):
     """ Discards clusters that do not explain anything in `X` from the
     (Bayesian)GaussianMixture `m` """
@@ -11,11 +12,12 @@ def prune_infinite_gmm(X, m):
         mask[i] = True
     d = {}
     for attr in ['weights', 'means', 'covariances']:
-        d[attr] = getattr(m, attr+'_')[mask,...]
+        d[attr] = getattr(m, attr+'_')[mask, ...]
     # Proportionally share the weight of the clusters left out
     shared_weight = np.sum(m.weights_[~mask])
     d['weights'] /= (1-shared_weight)
     return d
+
 
 def samples_from_mixture(m, n):
     """Draw `n` samples from the GMM `m`."""
@@ -24,6 +26,7 @@ def samples_from_mixture(m, n):
     means = m['means'][i]
     outputs = np.random.randn(*means.shape, 1)
     return means + np.squeeze(np.matmul(L_covs, outputs), axis=2)
+
 
 def gaussian_pdf(inputs, means, covs):
     """Compute the gaussian PDF for `inputs`, and
@@ -42,6 +45,7 @@ def gaussian_pdf(inputs, means, covs):
     g_pdf = divider * np.exp(exponent)
     return g_pdf
 
+
 def mask_matrix(matrix, m1, m2):
     "Use two mask indices on a matrix"
     d1 = np.sum(m1)
@@ -50,20 +54,21 @@ def mask_matrix(matrix, m1, m2):
     j = 0
     for i, b in enumerate(m1):
         if b:
-            out[:,j,:] = matrix[:,i,m2]
+            out[:, j, :] = matrix[:, i, m2]
             j += 1
     return out
 
 
-def _gmm_impute(m, inputs, n_impute=100):
+def _gmm_impute(m, inputs, n_impute=100, sample_impute=True):
     "Impute inputs using Gaussian Mixture Model m"
-    outputs = np.empty(shape=[n_impute]+list(inputs.shape),
-                       dtype=np.float)
-    for i, inp in enumerate(inputs):
-        mask = np.isnan(inp)
+    if sample_impute:
+        outputs = np.stack([inputs] * n_impute, axis=0)
+    else:
+        outputs = np.expand_dims(inputs.copy(), axis=0)
+    for i, (inp, mask) in enumerate(zip(inputs, np.isnan(inputs))):
         if not np.any(mask):
-            outputs[:,i,:] = inp
             continue
+
         d = {}
         if not np.any(~mask):
             d['means'] = m['means']
@@ -80,18 +85,21 @@ def _gmm_impute(m, inputs, n_impute=100):
             else:
                 d['weights'] /= normaliser
 
-            K_12 = mask_matrix(m['covariances'],mask,~mask)
-            K_22 = mask_matrix(m['covariances'],~mask,~mask)
+            K_12 = mask_matrix(m['covariances'], mask, ~mask)
+            K_22 = mask_matrix(m['covariances'], ~mask, ~mask)
             K_22__1 = np.linalg.inv(K_22)
             K_1222 = K_12 @ K_22__1
-            K_21 = mask_matrix(m['covariances'],~mask,mask)
-            K_11 = mask_matrix(m['covariances'],mask,mask)
+            K_21 = mask_matrix(m['covariances'], ~mask, mask)
+            K_11 = mask_matrix(m['covariances'], mask, mask)
 
-            diff = np.expand_dims(inp[~mask] - m['means'][:,~mask], axis=2)
-            d['means'] = m['means'][:,mask] + np.squeeze(K_1222 @ diff, axis=2)
+            diff = np.expand_dims(inp[~mask] - m['means'][:, ~mask], axis=2)
+            d['means'] = m['means'][:, mask] + np.squeeze(K_1222 @ diff, axis=2)
             d['covariances'] = K_11 - K_1222 @ K_21
 
-            outputs[:,i,~mask] = inp[~mask]
-        outputs[:,i,mask] = samples_from_mixture(d, n_impute)
-        #outputs[:,i,mask] = [np.mean(d['means'], axis=0)] * n_impute
+            outputs[:, i, ~mask] = inp[~mask]
+        if sample_impute:
+            outputs[:, i, mask] = samples_from_mixture(d, n_impute)
+        else:
+            outputs[0, i, mask] = np.sum(
+                d['means'] * d['weights'][:, np.newaxis], axis=0)
     return outputs
