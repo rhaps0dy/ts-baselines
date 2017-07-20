@@ -49,9 +49,12 @@ def df_from_R(name, more_than_one_value=False):
     category_keys = list(filter(lambda k: df[k].dtype == np.object, df.keys()))
 
     # Second pass: get these keys as ordered, to get the NAs correctly
-    df = R("transform({:s}, {:s})".format(name, ", ".join(
-        "{:s}=as.ordered({:s}${:s})".format(k, name, k)
-        for k in category_keys)))
+    if len(category_keys) > 0:
+        df = R("transform({:s}, {:s})".format(name, ", ".join(
+            "{:s}=as.ordered({:s}${:s})".format(k, name, k)
+            for k in category_keys)))
+    else:
+        df = R(name)
     assert all(df[k].dtype in [np.int32, np.float64] for k in df.keys())
 
     for k in filter(lambda k: df[k].dtype == np.int32, df.keys()):

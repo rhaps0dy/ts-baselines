@@ -43,7 +43,8 @@ def _estimate_missing_gaussian_parameters(X, resp, means, covariances,
     nk = resp.sum(axis=0) + 10 * np.finfo(resp.dtype).eps
     nk_vert = nk[:, np.newaxis]
     dependent_covs = [None] * len(X)
-    dependent_data_means = [None] * len(X)
+    dependent_data_means = np.zeros((X.shape[0],) + means.shape,
+                                    dtype=means.dtype)
     for i in range(len(X)):
         missing = all_missing[i, :]
         y = X[i, ~missing]
@@ -61,7 +62,7 @@ def _estimate_missing_gaussian_parameters(X, resp, means, covariances,
         K_mismis = mask_matrix(covariances, missing, missing)
         cov = K_mismis - K_1222 @ K_misobs.transpose([0, 2, 1])
         dependent_covs[i] = cov
-        dependent_data_means[i] = next_means_candidate
+        dependent_data_means[i, ...] = next_means_candidate
 
     for i, cov in enumerate(dependent_covs):
         centered_point = dependent_data_means[i] - next_means
@@ -72,7 +73,7 @@ def _estimate_missing_gaussian_parameters(X, resp, means, covariances,
         # `dependent_means_offsetted` ought to be the dependent means
         # (dependent on the observed variables), offsetted by the next means.
         dependent_means_offsetted = centered_point[:, missing]
-        M = np.concatenate([np.linalg.cholesky(cov),
+        M = np.concatenate([np.linalg.cholesky(np.linalg.inv(cov)),
                             np.expand_dims(dependent_means_offsetted, 2)],
                            axis=2)
         mismis_covs = M @ M.transpose([0, 2, 1])
@@ -85,14 +86,13 @@ def _estimate_missing_gaussian_parameters(X, resp, means, covariances,
     next_covariances = next_covariances.sum(axis=0)
     for k in range(next_covariances.shape[0]):
         next_covariances[k].flat[::next_covariances.shape[1] + 1] += reg_covar
+    #next_covariances = np.stack([np.eye(covariances.shape[1])]*covariances.shape[0])
+    #next_covariances[:,0,1] = next_covariances[:,1,0] = 0.5
+    #next_covariances *= 0.2
     return nk, next_means, next_covariances
 
 
-def _estimate_missing_log_gaussian_prob(X, means, precisions_chol,
-                                        covariance_type):
-    precisions = precisions_chol @ precisions_chol.transpose([0, 2, 1])
-    covariances = np.linalg.inv(precisions)
-
+def _estimate_missing_log_gaussian_prob(X, means, covariances):
     # We can take half the log determinant of a covariance by summing
     # over the masked members of this vector (one per component)
     covs_chol_diagonal = np.zeros_like(means)
@@ -112,7 +112,7 @@ def _estimate_missing_log_gaussian_prob(X, means, precisions_chol,
         log_prob = np.squeeze(log_prob, axis=[1, 2])
 
         log_det = covs_chol_diagonal[:, _mask].sum(axis=1)
-        out[i, :] = -.5*(n_features * np.log(2 * np.pi) + log_prob) + log_det
+        out[i, :] = -.5*(n_features * np.log(2 * np.pi) + log_prob) - log_det
     return out
 
 
@@ -164,7 +164,7 @@ class BayesianMixtureMissingData(BayesianGaussianMixture):
         # We remove `n_features * np.log(self.degrees_of_freedom_)` because
         # the precision matrix is normalized
         log_gauss = (_estimate_missing_log_gaussian_prob(
-            X, self.means_, self.precisions_cholesky_, self.covariance_type) -
+            X, self.means_, self.covariances_) -
             .5 * n_features * np.log(self.degrees_of_freedom_))
 
         log_lambda = n_features * np.log(2.) + np.sum(digamma(
@@ -175,9 +175,15 @@ class BayesianMixtureMissingData(BayesianGaussianMixture):
                                  n_features / self.mean_precision_)
 
 
-def impute_bayes_gmm(dataset, number_imputations=100, full_data=None,
+def impute_bayes_gmm(log_path, dataset, number_imputations=100, full_data=None,
                      n_components=10, n_init=5, init_params='random'):
     del full_data
+    if not os.path.exists(log_path):
+        os.mkdir(log_path)
+
+    save_file_path = os.path.join(log_path, 'imputed.pkl.gz')
+    if os.path.exists(save_file_path):
+        return pu.load(save_file_path)
 
     df, cat_idx = dataset
     df = df.copy()
@@ -214,11 +220,14 @@ def impute_bayes_gmm(dataset, number_imputations=100, full_data=None,
         lambda a: np.round(a).astype(np.int32))
     for k, value in naive_fillna.items():
         df[k] = df[k].where(df[k] != utils.NA_int32, other=value)
-    return [pd.concat([imputed_df, df[list(naive_fillna.keys())]],
-                      axis=1)[df.keys()]]
+    ret = [pd.concat([imputed_df, df[list(naive_fillna.keys())]],
+                     axis=1)[df.keys()]]
+    pu.dump(d, os.path.join(log_path, "params.pkl.gz"))
+    pu.dump(ret, save_file_path)
+    return ret
 
 
-if __name__ == '__main__':
+if __name__ == 'OLD__main__':
     full_data = datasets.datasets()["BostonHousing"][0]
     amputed_data = pu.load(
         "impute_benchmark/amputed_BostonHousing_MCAR_total_0.3.pkl.gz")
@@ -243,3 +252,10 @@ if __name__ == '__main__':
     print("RMSE:", utils.mean_rmse(
         np.isnan(rmse_ad.values), rmse_fd.values,
         list(d.values for d in rmse_id)))
+
+if __name__ == '__main__':
+    _ds = datasets.datasets()
+    dsets = dict(filter(lambda t: t[0] in {"Shuttle", "Ionosphere", "BostonHousing"},
+                        _ds.items()))
+    baseline = datasets.benchmark({'BayesGMM': datasets.memoize(impute_bayes_gmm),
+        }, dsets, do_not_compute=False)
