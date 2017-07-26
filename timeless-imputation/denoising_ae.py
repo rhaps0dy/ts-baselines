@@ -4,26 +4,120 @@ import utils
 import numpy as np
 import unittest
 import tensorflow as tf
+from tensorflow.python.framework import tensor_shape, tensor_util
 import os
+from tqdm import tqdm
 import time
 import itertools
 import category_dae
 from add_variable_scope import add_variable_scope
 import pandas as pd
 
+###
+# GENERIC NEURAL NET FUNCTIONS
+###
+
+SELU_ALPHA = 1.6732632423543772848170429916717
+SELU_LAMBDA = 1.0507009873554804934193349852946
+
 
 def MSRA_initializer(dtype=tf.float64):
-    return tf.contrib.layers.variance_scaling_initializer(factor=2.0,
-                                                          dtype=dtype)
+    return tf.contrib.layers.variance_scaling_initializer(factor=2.0)
 
 
 def SELU_initializer(dtype=tf.float64):
-    return tf.contrib.layers.variance_scaling_initializer(factor=1.0,
-                                                          dtype=dtype)
+    return tf.contrib.layers.variance_scaling_initializer(factor=1.0)
+
+
+@add_variable_scope(name="selu")
+def selu(x):
+    return SELU_LAMBDA * tf.where(x > 0.0, x, SELU_ALPHA * tf.nn.elu(x))
+
+
+@add_variable_scope(name="FC_net")
+def FC_net(inputs, layer_sizes_nlin, init, keep_prob, dropout_last_layer=False,
+           collection=None):
+    """Constructs a fully-connected network to specification.
+    `layer_sizes_nlin` includes the size of each hidden layer and its
+    activation function. It does not include the size of the input, which is
+    deduced from `inputs`."""
+    tf_float = inputs.dtype
+
+    keep_prob = tf.convert_to_tensor(keep_prob, dtype=inputs.dtype)
+    keep_prob.get_shape().assert_is_compatible_with(tensor_shape.scalar())
+
+    alpha_ = -SELU_ALPHA*SELU_LAMBDA
+    q_ = keep_prob
+    q = 1-q_
+    affine_A = tf.rsqrt(q * (1 + alpha_*alpha_*q_))
+    affine_B = affine_A * q_*alpha_
+    del q, q_
+
+    def _selu_dropout(x):
+        random_tensor = tf.random_uniform(tf.shape(x), dtype=x.dtype)
+        d = tf.floor(random_tensor + keep_prob)
+        return affine_A*(d*x + (1-d)*alpha_) - affine_B
+
+    @add_variable_scope()
+    def selu_dropout(x):
+        if tensor_util.constant_value(keep_prob) == 1:
+            return x
+        return tf.cond(
+            tf.equal(keep_prob, 1.0),
+            true_fn=lambda: [x],
+            false_fn=lambda: [_selu_dropout(x)])
+
+    ls_out, nonlinearities = zip(*layer_sizes_nlin)
+    ls_in = [int(inputs.get_shape()[1])] + list(ls_out[:-1])
+    x = tf.check_numerics(inputs, "inputs")
+    for i, (m, n, nlin) in enumerate(zip(ls_in, ls_out, nonlinearities)):
+        with tf.variable_scope("layer_{:d}".format(i)):
+            mean_before = tf.reduce_mean(x, axis=1)
+            var_before = tf.reduce_mean(tf.square(
+                x - tf.expand_dims(mean_before, axis=1)), axis=1)
+            #x = tf.Print(x, [mean_before, var_before], summarize=3)
+            #x = tf.Print(x, [tf.reduce_mean(mean_before), tf.reduce_mean(var_before)], message="before", summarize=3)
+            if nlin == selu:
+                x = selu_dropout(x, name="dropout_selu_{:d}".format(i))
+            else:
+                x = tf.nn.dropout(x, keep_prob, name="dropout_{:d}".format(i))
+            mean_after = tf.reduce_mean(x, axis=1)
+            var_after = tf.reduce_mean(tf.square(
+                x - tf.expand_dims(mean_after, axis=1)), axis=1)
+            #x = tf.Print(x, [tf.reduce_mean(mean_after), tf.reduce_mean(var_after)], message="after", summarize=3)
+
+            W = tf.get_variable("W", shape=[m, n],
+                                initializer=init(tf_float), dtype=tf_float)
+            b = tf.get_variable("b", shape=[n],
+                                initializer=tf.constant_initializer(0.1),
+                                dtype=tf_float)
+            if collection is not None:
+                tf.add_to_collection(collection, W)
+                tf.add_to_collection(collection, b)
+            y = tf.Print(x, [x, W, b], message="X and the weights")
+            x = tf.check_numerics(x, "before_linout_{:d}".format(i))
+            W = tf.check_numerics(W, "W_{:d}".format(i))
+            b = tf.check_numerics(b, "b_{:d}".format(i))
+            x = tf.matmul(x, W) + b
+            x = tf.check_numerics(x, "linout_{:d}".format(i))
+            if nlin is not None:
+                x = nlin(x, name="activation_{:d}".format(i))
+            x = tf.check_numerics(x, "layer_{:d}".format(i))
+    if dropout_last_layer:
+        if nlin == selu:
+            x = selu_dropout(x, name="dropout_selu_{:d}".format(i))
+        else:
+            x = tf.nn.dropout(x, keep_prob, name="dropout_{:d}".format(i))
+    return x
+
+
+###
+# FUNCTIONS SPECIFIC TO IMPUTATION
+###
 
 
 def preimpute_without_model(rs, batch, possible_inputs, possible_inputs_lens,
-                            additional_corruption_p=0.0, test=False):
+                            additional_corruption_p=0.0):
     if possible_inputs is None:
         return [batch, batch == 0]
     batch = batch.copy()
@@ -44,37 +138,27 @@ def preimpute_without_model(rs, batch, possible_inputs, possible_inputs_lens,
 
 @add_variable_scope(name="tf_network")
 def tf_network(layer_sizes, input_layer, pristine_num, pristine_cat, init,
-               nlin, residual):
+               nlin, residual, keep_prob):
     tf_float = input_layer["inputs"].dtype
-    x = tf.concat([input_layer["inputs"], tf.cast(
+    inputs = tf.concat([input_layer["inputs"], tf.cast(
         input_layer["mask_inputs"], tf_float)], axis=1)
 
-    layer_sizes.insert(0, int(x.get_shape()[1]))
+    # Append output layer size
     num_size = len(input_layer["num_idx"])
     layer_sizes.append(num_size + sum(input_layer["n_cats_l"]))
+    nonlinearities = [nlin] * (len(layer_sizes)-1) + [None]
 
-    for i, (m, n) in enumerate(zip(layer_sizes[:-1], layer_sizes[1:])):
-        with tf.variable_scope("layer_{:d}".format(i)):
-            x = tf.check_numerics(x, "layer_{:d}".format(i))
-            if i > 0:
-                x = nlin(x)
-            W = tf.get_variable("W", shape=[m, n],
-                                initializer=init(tf_float), dtype=tf_float)
-            b = tf.get_variable("b", shape=[n],
-                                initializer=tf.constant_initializer(0.1),
-                                dtype=tf_float)
-            if residual and m == n:
-                x = x + tf.matmul(x, W) + b
-            else:
-                x = tf.matmul(x, W) + b
-            x = tf.check_numerics(x, "layer_{:d}".format(i))
+    # Create fully-connected network part
+    outputs = FC_net(inputs, list(zip(layer_sizes, nonlinearities)),
+                     init, keep_prob)
 
+    # Concatenate outputs and define loss
     ret = {}
     cat_preds = []
     cat_losses = []
     prev_size = num_size
     for i, n_cats in enumerate(input_layer["n_cats_l"]):
-        this_slice = x[:, prev_size:prev_size+n_cats]
+        this_slice = outputs[:, prev_size:prev_size+n_cats]
         cat_preds.append(tf.argmax(this_slice, axis=1) + 1)
         l = tf.nn.sparse_softmax_cross_entropy_with_logits(
             labels=input_layer["cat_inputs"][:, i],
@@ -82,12 +166,12 @@ def tf_network(layer_sizes, input_layer, pristine_num, pristine_cat, init,
         assert len(l.get_shape()) == 1
         cat_losses.append(l)
         prev_size += n_cats
-    assert prev_size == int(x.get_shape()[1]), "we used all the outputs"
+    assert prev_size == int(outputs.get_shape()[1]), "we used all the outputs"
 
     if num_size == 0:
         loss = None
     else:
-        num_preds = x[:, :num_size]
+        num_preds = outputs[:, :num_size]
         num_mask = ~tf.is_nan(pristine_num)
         diff = tf.squared_difference(tf.boolean_mask(pristine_num, num_mask),
                                      tf.boolean_mask(num_preds, num_mask))
@@ -108,13 +192,6 @@ def tf_network(layer_sizes, input_layer, pristine_num, pristine_cat, init,
 
     ret["loss"] = loss
     return ret
-
-
-def selu(x, name="selu"):
-    alpha = 1.6732632423543772848170429916717
-    scale = 1.0507009873554804934193349852946
-    with tf.variable_scope(name):
-        return scale * tf.where(x > 0.0, x, alpha * tf.exp(x) - alpha)
 
 
 def collect_possible_inputs(df, dtype):
@@ -149,8 +226,16 @@ def impute(log_path, dataset, full_data, number_imputations=5,
            init_type=MSRA_initializer, batch_size=256,
            nlin=tf.nn.relu, residual=False,
            patience=50, learning_rate=0.001, optimizer=tf.train.AdamOptimizer,
-           corruption_prob=0.5, validation_proportion=0.15,
+           corruption_prob=0.5, keep_prob=0.95, validation_proportion=0.15,
            tf_float=tf.float64):
+    d = {}
+    for k, v in locals().items():
+        if k not in {'log_path', 'dataset', 'full_data'}:
+            d[k] = str(v)
+    with open(os.path.join(log_path, 'flags.txt'), 'w') as f:
+            f.write(str(d)+'\n')
+    del d, k, v, f
+
     tf.reset_default_graph()
     rs = np.random.RandomState(seed)
     tf.set_random_seed(rs.randint(999999))
@@ -170,16 +255,18 @@ def impute(log_path, dataset, full_data, number_imputations=5,
     pristine_cat = tf.placeholder(tf.int32,
                                   shape=[None, len(input_layer["cat_idx"])],
                                   name="pristine_cat")
+    keep_prob_ph = tf.placeholder(tf_float, shape=[], name="keep_prob")
     layer_sizes = [hidden_units] * (number_layers - 1)
     loss_preds = tf_network(layer_sizes, input_layer, pristine_num,
-                            pristine_cat, init_type, nlin, residual)
+                            pristine_cat, init_type, nlin, residual,
+                            keep_prob_ph)
 
     # Make the input data distribution
-    num_pi = collect_possible_inputs(train_df[input_layer["num_idx"]],
+    num_pi = collect_possible_inputs(test_df[input_layer["num_idx"]],
                                      np.float64)
     if num_pi[0] is None:
         print(log_path, ": num_pi is None")
-    cat_pi = collect_possible_inputs(train_df[input_layer["cat_idx"]],
+    cat_pi = collect_possible_inputs(test_df[input_layer["cat_idx"]],
                                      np.int32)
     if cat_pi[0] is None:
         print(log_path, ": cat_pi is None")
@@ -208,29 +295,29 @@ def impute(log_path, dataset, full_data, number_imputations=5,
     pfc_summary = tf.summary.scalar("test/PFC", pfc_ph)
     test_summary = tf.summary.merge([rmse_summary, pfc_summary])
 
-    def compute_impute(sess):
+    def compute_impute(sess, test_num=test_num, test_cat=test_cat):
         net_outs = []
-        for imp_i in range(number_imputations):
-            feed_dict = {}
-            to_run = [[], []]
-            if "num_inputs" in input_layer:
-                imp_d_num, imp_d_num_mask = preimpute_without_model(
-                    rs, test_num, *num_pi, test=True)
-                feed_dict[input_layer["num_inputs"]] = imp_d_num
-                feed_dict[input_layer["num_mask_inputs"]] = imp_d_num_mask
-                to_run[0] = loss_preds["num_preds"]
-            if "cat_inputs" in input_layer:
-                imp_d_cat, imp_d_cat_mask = preimpute_without_model(
-                    rs, test_cat, *cat_pi, test=True)
-                feed_dict[input_layer["cat_inputs"]] = imp_d_cat
-                feed_dict[input_layer["cat_mask_inputs"]] = imp_d_cat_mask
-                to_run[1] = loss_preds["cat_preds"]
+        for imp_i in range(16):
+            imp_d_num, imp_d_num_mask = preimpute_without_model(
+                rs, test_num, *num_pi)
+            imp_d_cat, imp_d_cat_mask = preimpute_without_model(
+                    rs, test_cat, *cat_pi)
+            for it in range(number_imputations // 16):
+                feed_dict = {keep_prob_ph: 1.0}
+                to_run = [[], []]
+                if "num_inputs" in input_layer:
+                    feed_dict[input_layer["num_inputs"]] = imp_d_num
+                    feed_dict[input_layer["num_mask_inputs"]] = imp_d_num_mask
+                    to_run[0] = loss_preds["num_preds"]
+                if "cat_inputs" in input_layer:
+                    feed_dict[input_layer["cat_inputs"]] = imp_d_cat
+                    feed_dict[input_layer["cat_mask_inputs"]] = imp_d_cat_mask
+                    to_run[1] = loss_preds["cat_preds"]
+                imp_d_num, imp_d_cat = sess.run(to_run, feed_dict)
 
-            num_preds, cat_preds = sess.run(to_run,
-                                            feed_dict)
             net_outs.append(pd.concat([
-                pd.DataFrame(num_preds, columns=input_layer["num_idx"]),
-                pd.DataFrame(cat_preds, columns=input_layer["cat_idx"])
+                pd.DataFrame(imp_d_num, columns=input_layer["num_idx"]),
+                pd.DataFrame(imp_d_cat, columns=input_layer["cat_idx"])
             ], axis=1))
         return net_outs, imp_d_num_mask
 
@@ -259,21 +346,21 @@ def impute(log_path, dataset, full_data, number_imputations=5,
         if ckpt is not None:
             print("Restoring model from", ckpt)
             saver.restore(sess, ckpt)
-            remaining_patience = 0
+            #remaining_patience = 0
             just_restored = True
         del ckpt
 
-        for step in itertools.count(0):
+        for step in tqdm(itertools.count(0)):
             if remaining_patience <= 0:
                 if not just_restored:
                     print("Saving checkpoint...")
-                    saver.save(sess, os.path.join(log_path, 'ckpt'),
-                               global_step=step)
+                    #saver.save(sess, os.path.join(log_path, 'ckpt'),
+                    #           global_step=step)
                 break
 
             i = step % num_batches
             # Populate feed_dict; duplicated code for num and cat
-            feed_dict = {}
+            feed_dict = {keep_prob_ph: keep_prob}
             into_feed_dict("num",
                            train_num[batch_size * i:batch_size * (i + 1)],
                            num_pi, pristine_num, feed_dict)
@@ -282,13 +369,13 @@ def impute(log_path, dataset, full_data, number_imputations=5,
                            cat_pi, pristine_cat, feed_dict)
             del i
 
-            current_time = time.time()
-            if current_time - time_since_last_log > 5.:
+            #current_time = time.time()
+            if step % 500 == 0:
                 # Show loss and validation loss
                 _, l, l_s = sess.run([train_op, loss, training_summary],
                                      feed_dict)
                 summary_writer.add_summary(l_s, step)
-                val_fd = {}
+                val_fd = {keep_prob_ph: 1.0}
                 into_feed_dict("num", validation_num, num_pi, pristine_num,
                                val_fd)
                 into_feed_dict("cat", validation_cat, cat_pi, pristine_cat,
@@ -303,7 +390,8 @@ def impute(log_path, dataset, full_data, number_imputations=5,
                 print("Loss: {}, validation loss: {}".format(l, v_l))
 
                 # Compute test performance every 4 minutes
-                if current_time - time_since_last_save > 240.:
+                #if False and current_time - time_since_last_save > 240.:
+                if step % 10000 == 10000-500:
                     time_since_last_save = time.time()
                     print("Computing imputation performance...")
                     net_outs, imp_d_num_mask = compute_impute(sess)
@@ -329,7 +417,7 @@ def impute(log_path, dataset, full_data, number_imputations=5,
                 time_since_last_log = time.time()
 
             else:
-                sess.run(train_op, feed_dict)
+                _ = sess.run(train_op, feed_dict)
 
         imputed_dfs = compute_impute(sess)[0]
         return list(map(
@@ -359,38 +447,41 @@ class TestDenoisingAE(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    dset, cat_idx = datasets.datasets()["BostonHousing"]
+    dset, cat_idx = datasets.datasets()["LetterRecognition"]
     missing_dset = pu.load("impute_benchmark/"
-                           "amputed_BostonHousing_MCAR_total_0.3.pkl.gz")
+                           "amputed_LetterRecognition_MCAR_total_0.3.pkl.gz")
     # missing_dset = utils.mcar_total(dset, missing_proportion=0.2)
-    (missing_dset, dset), _ = utils.normalise_dataframes(missing_dset, dset)
+    (missing_dset, dset), _ = utils.normalise_dataframes(missing_dset, dset,
+                                                         method='mean_std')
 
-    for number_layers in [4]:  # [2, 8, 16]:
-        for hidden_units in [128]:  # [128, 256, 512]:
-            for residual in [False]:  # [True, False]:
-                for nlin in [selu]:  # [selu, tf.nn.relu, tf.nn.tanh]:
-                    dir_name = "DAE_cat_logs/{:d}_{:d}_{}_{:s}".format(
-                        number_layers, hidden_units, residual, nlin.__name__)
-                    if not os.path.exists(dir_name):
-                        os.mkdir(dir_name)
-                    if nlin == tf.nn.relu:
-                        init_type = MSRA_initializer
-                    else:
-                        init_type = SELU_initializer
+    for optimizer in [tf.train.GradientDescentOptimizer]:
+        for number_layers in [8]:
+            for hidden_units in [128]:  # [128, 256, 512]:
+                for corruption_prob in [.2]:  # [.2, .5, .8]:
+                    for nlin in [selu]:  # [selu, tf.nn.relu, tf.nn.tanh]:
+                        for keep_prob in [.95]:
+                            dir_name = "DAE_selu_logs/{}_{}_{}_{}_{}_{}".format(
+                                optimizer.__name__, number_layers, hidden_units,
+                                corruption_prob, nlin.__name__, keep_prob)
 
-                    tf.reset_default_graph()
-                    impute(dir_name,
-                           (missing_dset, cat_idx),
-                           (dset, cat_idx),
-                           number_imputations=128,
-                           number_layers=number_layers,
-                           hidden_units=hidden_units,
-                           seed=0,
-                           init_type=init_type,
-                           batch_size=256,
-                           nlin=nlin,
-                           residual=residual,
-                           patience=100000000,
-                           learning_rate=1e-4,
-                           corruption_prob=0.5,
-                           optimizer=tf.train.GradientDescentOptimizer)
+                            if nlin == tf.nn.relu:
+                                init_type = MSRA_initializer
+                            else:
+                                init_type = SELU_initializer
+
+                            impute(dir_name,
+                                   (missing_dset, cat_idx),
+                                   (dset, cat_idx),
+                                   number_imputations=128,
+                                   number_layers=number_layers,
+                                   hidden_units=hidden_units,
+                                   seed=10,
+                                   init_type=init_type,
+                                   batch_size=256,
+                                   nlin=nlin,
+                                   residual=False,
+                                   patience=20,
+                                   learning_rate=1e-3,
+                                   keep_prob=keep_prob,
+                                   corruption_prob=corruption_prob,
+                                   optimizer=optimizer)
