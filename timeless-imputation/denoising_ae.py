@@ -12,26 +12,11 @@ import itertools
 import category_dae
 from add_variable_scope import add_variable_scope
 import pandas as pd
-
-###
-# GENERIC NEURAL NET FUNCTIONS
-###
-
-SELU_ALPHA = 1.6732632423543772848170429916717
-SELU_LAMBDA = 1.0507009873554804934193349852946
+import selu
 
 
 def MSRA_initializer(dtype=tf.float64):
     return tf.contrib.layers.variance_scaling_initializer(factor=2.0)
-
-
-def SELU_initializer(dtype=tf.float64):
-    return tf.contrib.layers.variance_scaling_initializer(factor=1.0)
-
-
-@add_variable_scope(name="selu")
-def selu(x):
-    return SELU_LAMBDA * tf.where(x > 0.0, x, SELU_ALPHA * tf.nn.elu(x))
 
 
 @add_variable_scope(name="FC_net")
@@ -43,71 +28,42 @@ def FC_net(inputs, layer_sizes_nlin, init, keep_prob, dropout_last_layer=False,
     deduced from `inputs`."""
     tf_float = inputs.dtype
 
-    keep_prob = tf.convert_to_tensor(keep_prob, dtype=inputs.dtype)
-    keep_prob.get_shape().assert_is_compatible_with(tensor_shape.scalar())
-
-    alpha_ = -SELU_ALPHA*SELU_LAMBDA
-    q_ = keep_prob
-    q = 1-q_
-    affine_A = tf.rsqrt(q * (1 + alpha_*alpha_*q_))
-    affine_B = affine_A * q_*alpha_
-    del q, q_
-
-    def _selu_dropout(x):
-        random_tensor = tf.random_uniform(tf.shape(x), dtype=x.dtype)
-        d = tf.floor(random_tensor + keep_prob)
-        return affine_A*(d*x + (1-d)*alpha_) - affine_B
-
-    @add_variable_scope()
-    def selu_dropout(x):
-        if tensor_util.constant_value(keep_prob) == 1:
-            return x
-        return tf.cond(
-            tf.equal(keep_prob, 1.0),
-            true_fn=lambda: [x],
-            false_fn=lambda: [_selu_dropout(x)])
-
     ls_out, nonlinearities = zip(*layer_sizes_nlin)
     ls_in = [int(inputs.get_shape()[1])] + list(ls_out[:-1])
-    x = tf.check_numerics(inputs, "inputs")
+    training = tf.equal(keep_prob, 1., name="training")
+    #x = tf.check_numerics(inputs, "inputs")
+    x = inputs
     for i, (m, n, nlin) in enumerate(zip(ls_in, ls_out, nonlinearities)):
         with tf.variable_scope("layer_{:d}".format(i)):
-            mean_before = tf.reduce_mean(x, axis=1)
-            var_before = tf.reduce_mean(tf.square(
-                x - tf.expand_dims(mean_before, axis=1)), axis=1)
-            #x = tf.Print(x, [mean_before, var_before], summarize=3)
-            #x = tf.Print(x, [tf.reduce_mean(mean_before), tf.reduce_mean(var_before)], message="before", summarize=3)
-            if nlin == selu:
-                x = selu_dropout(x, name="dropout_selu_{:d}".format(i))
-            else:
-                x = tf.nn.dropout(x, keep_prob, name="dropout_{:d}".format(i))
-            mean_after = tf.reduce_mean(x, axis=1)
-            var_after = tf.reduce_mean(tf.square(
-                x - tf.expand_dims(mean_after, axis=1)), axis=1)
-            #x = tf.Print(x, [tf.reduce_mean(mean_after), tf.reduce_mean(var_after)], message="after", summarize=3)
+            #if nlin == selu.nlin and i > 0:
+            #    x = selu.dropout(x, keep_prob, name="dropout_selu_{:d}".format(i),
+            #                     training=training)
+            #else:
+            #    x = tf.nn.dropout(x, keep_prob, name="dropout_{:d}".format(i))
 
             W = tf.get_variable("W", shape=[m, n],
-                                initializer=init(tf_float), dtype=tf_float)
+                                initializer=init, dtype=tf_float)
             b = tf.get_variable("b", shape=[n],
-                                initializer=tf.constant_initializer(0.1),
+                                initializer=tf.constant_initializer(
+                                    0.0 if nlin != tf.nn.relu else 0.1),
                                 dtype=tf_float)
             if collection is not None:
                 tf.add_to_collection(collection, W)
                 tf.add_to_collection(collection, b)
-            y = tf.Print(x, [x, W, b], message="X and the weights")
-            x = tf.check_numerics(x, "before_linout_{:d}".format(i))
-            W = tf.check_numerics(W, "W_{:d}".format(i))
-            b = tf.check_numerics(b, "b_{:d}".format(i))
+            #x = tf.check_numerics(x, "before_linout_{:d}".format(i))
+            #W = tf.check_numerics(W, "W_{:d}".format(i))
+            #b = tf.check_numerics(b, "b_{:d}".format(i))
             x = tf.matmul(x, W) + b
-            x = tf.check_numerics(x, "linout_{:d}".format(i))
+            #x = tf.check_numerics(x, "linout_{:d}".format(i))
             if nlin is not None:
                 x = nlin(x, name="activation_{:d}".format(i))
-            x = tf.check_numerics(x, "layer_{:d}".format(i))
-    if dropout_last_layer:
-        if nlin == selu:
-            x = selu_dropout(x, name="dropout_selu_{:d}".format(i))
-        else:
-            x = tf.nn.dropout(x, keep_prob, name="dropout_{:d}".format(i))
+            #x = tf.check_numerics(x, "layer_{:d}".format(i))
+    #if dropout_last_layer:
+    #    if nlin == selu.nlin:
+    #        x = selu.dropout(x, keep_prob, name="dropout_selu_{:d}".format(i),
+    #                         training=training)
+    #    else:
+    #        x = tf.nn.dropout(x, keep_prob, name="dropout_{:d}".format(i))
     return x
 
 
@@ -458,7 +414,7 @@ if __name__ == '__main__':
         for number_layers in [8]:
             for hidden_units in [128]:  # [128, 256, 512]:
                 for corruption_prob in [.2]:  # [.2, .5, .8]:
-                    for nlin in [selu]:  # [selu, tf.nn.relu, tf.nn.tanh]:
+                    for nlin in [selu.nlin]:  # [selu, tf.nn.relu, tf.nn.tanh]:
                         for keep_prob in [.95]:
                             dir_name = "DAE_selu_logs/{}_{}_{}_{}_{}_{}".format(
                                 optimizer.__name__, number_layers, hidden_units,
@@ -467,7 +423,7 @@ if __name__ == '__main__':
                             if nlin == tf.nn.relu:
                                 init_type = MSRA_initializer
                             else:
-                                init_type = SELU_initializer
+                                init_type = selu.initializer
 
                             impute(dir_name,
                                    (missing_dset, cat_idx),

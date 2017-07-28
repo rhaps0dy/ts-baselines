@@ -190,12 +190,12 @@ def unnormalise_dataframes(mean_std, dataframes):
     return _rescale_dataframes(dataframes, mean, std, lambda d, m, s: d*s+m)
 
 
-def impute_mice(dataset, number_imputations=5, full_data=None):
+def impute_mice(dataset, number_imputations=5, method='pmm', full_data=None):
     "Imputed dataset using MICE"
     del full_data
     df_to_R(dataset, "df")
-    R("imputed_df <- mice(df, m={:d}, maxit=100, method='pmm', seed={:d})"
-      .format(number_imputations, 500))
+    R("imputed_df <- mice(df, m={:d}, maxit=100, method='{:s}', seed={:d})"
+      .format(number_imputations, method, 500))
     dfs = []
     for i in range(1, number_imputations + 1):
         R("idf <- complete(imputed_df, {:d})".format(i))
@@ -214,3 +214,23 @@ def impute_missforest(dataset, number_imputations=1, full_data=None):
     R("imputed_df <- missForest(df, parallelize='{:s}')".format(par))
     df, cat_idx = df_from_R("imputed_df$ximp")
     return [df]
+
+def R_random_forest(x, y, misX, ntree=100):
+    R.assign("x", x)
+    R.assign("y", y)
+    sampsize = x.shape[0]
+    nodesize = 5
+    mtry = int(np.floor(x.shape[1]**.5))
+    R("""RF <- randomForest(x = x, y = y, ntree = {ntree:d}, mtry = {mtry:d},
+          replace = TRUE, sampsize = {sampsize:d},
+          nodesize = {nodesize:d}, maxnodes=NULL)""".format(
+              ntree=ntree, mtry=mtry, sampsize=sampsize,
+              nodesize=nodesize))
+    R.assign("misX", misX)
+    R("misY <- predict(RF, misX)")
+    return R("misY")
+
+
+def dataframe_like(dataframe, new_values):
+    return pd.DataFrame(new_values, index=dataframe.index,
+                        columns=dataframe.columns)
