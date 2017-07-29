@@ -11,6 +11,7 @@ import utils
 import datasets
 import pickle_utils as pu
 import os
+from tqdm import tqdm
 
 
 rpy2.robjects.numpy2ri.activate()
@@ -149,6 +150,7 @@ class BayesianMixtureMissingData(BayesianGaussianMixture):
         self._estimate_precisions(nk, xk, sk)
 
     def _m_step(self, X, log_resp):
+        self._tqdm.update()
         n_samples, _ = X.shape
         nk, xk, sk = _estimate_missing_gaussian_parameters(
             X, np.exp(log_resp), self.means_, self.covariances_,
@@ -205,6 +207,7 @@ def impute_bayes_gmm(log_path, dataset, number_imputations=100, full_data=None,
         m = BayesianMixtureMissingData(n_components=n_components,
                                        n_init=n_init,
                                        init_params=init_params)
+        m._tqdm = tqdm()
         m.fit(data)
         d = {}
         for attr in ['weights', 'means', 'covariances']:
@@ -257,10 +260,10 @@ if __name__ == 'OLD__main__':
 
 if __name__ == '__main__':
     _ds = datasets.datasets()
-    dsets = dict(filter(lambda t: t[0] in {"BostonHousing"},  # {"Shuttle", "Ionosphere", "BostonHousing"},
+    dsets = dict(filter(lambda t: t[0] in {"LetterRecognition"},
                         _ds.items()))
     baseline = datasets.benchmark({
-        'BGMM_10_3': lambda p, d, full_data: impute_bayes_gmm(
+        'BGMM_10': lambda p, d, full_data: impute_bayes_gmm(
             p, d, full_data=full_data, number_imputations=100,
-            n_components=20)
+            n_components=10)
     }, dsets, do_not_compute=False)
