@@ -264,7 +264,8 @@ def percentage_falsely_classified(amputed_data, full_data, imputed_data):
     wrong, total = count_wrong_classifications(
         full_data[int_keys].values[int_mask],
         list(i[int_keys].values[int_mask] for i in imputed_data))
-
+    if total == 0:
+        return np.nan
     return wrong/total
 
 

@@ -116,8 +116,6 @@ def benchmark(impute_methods, datasets, do_not_compute=False,
                     [ampute_fun_name][str(proportion)] = np.nan
                 table['NRMSE'][algo_name][norm_type][data_name]\
                     [ampute_fun_name][str(proportion)] = np.nan
-                table['total_cats'][algo_name][norm_type][data_name]\
-                    [ampute_fun_name][str(proportion)] = np.nan
                 table['PFC'][algo_name][norm_type][data_name]\
                     [ampute_fun_name][str(proportion)] = np.nan
                 continue

@@ -106,7 +106,7 @@ def postprocess_dataframe(df, info, reindex_categories=True):
 
 
 def impute(dataset, full_data, sequential=True, predict_fun=predict_Py_RF,
-           ignore_ordered=True, max_iterations=25):
+           ignore_ordered=True, print_progress=True, max_iterations=25):
     info = category_dae.dataset_dimensions_info(dataset)
     test_df, masks_usable = preprocess_dataframe(
         dataset[0], info, ignore_ordered=ignore_ordered)
@@ -121,8 +121,9 @@ def impute(dataset, full_data, sequential=True, predict_fun=predict_Py_RF,
                              key=lambda k: -masks_usable[k].sum())
     masks_usable = masks_usable[classifications]
 
-    print("Start", utils.reconstruction_metrics(
-        dataset[0], full_data[0], postprocess_dataframe(test_df, info)))
+    if print_progress:
+        print("Start", utils.reconstruction_metrics(
+            dataset[0], full_data[0], postprocess_dataframe(test_df, info)))
 
     num_idx = info["num_idx"]
     cat_idx = info["cat_idx"]
@@ -163,9 +164,10 @@ def impute(dataset, full_data, sequential=True, predict_fun=predict_Py_RF,
 
         cur_cat_change = np.sum((dense_df[cat_idx] != prev_cats).values)
 
-        print("Iter", iter_i, utils.reconstruction_metrics(
-            dataset[0], full_data[0], postprocess_dataframe(test_df, info)),
-              cur_num_change, cur_cat_change)
+        if print_progress:
+            print("Iter", iter_i, utils.reconstruction_metrics(
+                dataset[0], full_data[0], postprocess_dataframe(test_df, info)),
+                cur_num_change, cur_cat_change)
 
         if (cur_num_change < prev_num_change or
                 cur_cat_change < prev_cat_change):
@@ -197,12 +199,13 @@ class TestPrePostprocessing(unittest.TestCase):
 
 if __name__ == '__main__':
     _ds = datasets.datasets()
-    dsets = dict((x, _ds[x]) for x in ["Soybean"])
+    dsets = dict((x, _ds[x]) for x in ["Soybean", "BostonHousing",
+                                       "BreastCancer", "Ionosphere", "Servo"])
     baseline = datasets.benchmark({
-        'MF_Py_par': lambda _path, d, full_data: impute(
-            d, full_data, sequential=False),
-        'MF_Py_seq': lambda _path, d, full_data: impute(
-            d, full_data, sequential=True),
+        'MF_Py_par': datasets.memoize(lambda d, full_data: impute(
+            d, full_data, sequential=False, print_progress=True)),
+        'MF_Py_seq': datasets.memoize(lambda d, full_data: impute(
+            d, full_data, sequential=True, print_progress=True)),
         'MissForest': datasets.memoize(utils.impute_missforest)
     }, dsets, do_not_compute=False)
     print(baseline)
