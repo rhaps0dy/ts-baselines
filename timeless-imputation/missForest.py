@@ -1,55 +1,58 @@
 import numpy as np
-import pickle_utils as pu
 import datasets
 import utils
 import unittest
 import category_dae
 import pandas as pd
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 
 
-def rf_impute(__path, dataset, full_data, *__args, **__kwargs):
-    print("RFIMPUTE")
-    @pu.memoize("mf.pkl.gz")
-    def f():
-        return utils.impute_missforest(dataset)
-    a = f()
-    print("RMSE:", utils.rmse(
-        dataset[0].isnull().values, full_data[0].values, a))
-    return 0
+def predict_Py_RF(df, dense_df, prev_df, train_mask, key, cat_dummies,
+                  use_previous_prediction=False):
+    if not use_previous_prediction:
+        del prev_df  # To prevent bugs
+
+    if key in cat_dummies:
+        X = df.drop(cat_dummies[key], axis=1)
+        y = dense_df[key]
+        rf = RandomForestClassifier()
+    else:
+        X = df.drop(key, axis=1)
+        n_features = X.shape[1]  # TODO: not always true
+        y = df[key]
+        rf = RandomForestRegressor(n_estimators=100, n_jobs=-1,
+                                   max_features=int(np.floor(n_features**.5)),
+                                   bootstrap=False, min_samples_split=5)
+    rf.fit(X[train_mask], y[train_mask])
+
+    if key in cat_dummies:
+        n_cats = y.max() + 1
+        update_ks = cat_dummies[key]
+        if len(cat_dummies[key]) == 1:
+            if n_cats > 2:
+                out = rf.predict(X)[:, np.newaxis]
+            else:
+                out = rf.predict_proba(X)[:, 1:2]
+        else:
+            out = rf.predict_proba(X)
+    else:
+        update_ks = [key]
+        out = rf.predict(X)
+    return pd.DataFrame(out, index=y.index, columns=update_ks)
 
 
-def predict_Py_RF(data, train_mask, j):
-    X_ = np.concatenate([data.values[:, :j], data.values[:, j+1:]],
-                        axis=1)
-    X_train = X_[train_mask, :]
-    y_train = data.values[train_mask, j]
-    X_test = X_[~train_mask, :]
-    y_test = data.values[~train_mask, j]
-    rf = RandomForestRegressor(n_estimators=100, n_jobs=-1,
-                               max_features=int(np.floor(X_train.shape[1]**.5)),
-                               bootstrap=False,
-                               min_samples_split=5)
-    rf.fit(X_train, y_train)
-    train_perf = rf.score(X_train, y_train)
-    test_perf = rf.score(X_test, y_test)
-    print("Test: {:.4f}, Training: {:.4f}".format(test_perf,
-                                                  train_perf))
-    # Now fill the matrix with the predicted values
-    y = rf.predict(X_test)
-    return y
+def predict_R_RF(df, dense_df, prev_df, train_mask, key, cat_dummies):
+    X = dense_df.drop(key, axis=1)
+    y = utils.R_random_forest(X[train_mask].values,
+                              dense_df.loc[train_mask, key].values,
+                              X.values)
+    return pd.DataFrame(y, index=X.index, columns=[key])
 
 
-def predict_R_RF(data, train_mask, j):
-    k = data.keys()[j]
-    y = utils.R_random_forest(data.drop(k, axis=1).values[train_mask],
-                              data[k].values[train_mask],
-                              data.drop(k, axis=1).values[~train_mask])
-    return y
-
-
-def preprocess_dataframe(df, info, ignore_ordered=False):
-    df = category_dae.preprocess_dataframe(df.copy(), info)
+def preprocess_dataframe(df, info, ignore_ordered=False,
+                         reindex_categories=True):
+    if reindex_categories:
+        df = category_dae.preprocess_dataframe(df.copy(), info)
 
     masks_usable = pd.DataFrame()
     for k in info["num_idx"]:
@@ -78,7 +81,7 @@ def preprocess_dataframe(df, info, ignore_ordered=False):
     return pd.concat(final_df, axis=1), masks_usable
 
 
-def postprocess_dataframe(df, info):
+def postprocess_dataframe(df, info, reindex_categories=True):
     out = df[info["num_idx"]]
     nans = pd.DataFrame()
     for k_orig, k_dum in info["cat_dummies"].items():
@@ -95,70 +98,92 @@ def postprocess_dataframe(df, info):
             f = (df[k_dum].apply(np.argmax, axis=1).map(k_dum_d)
                  .astype(np.int32))
         out.loc[:, k_orig] = f
-    out = category_dae.postprocess_dataframe(out, info)
+    if reindex_categories:
+        out = category_dae.postprocess_dataframe(out, info)
     for k in nans.keys():
         out.loc[nans[k], k] = category_dae.NA_int32
     return out
 
 
-def impute(dataset, full_data, sequential=True):
+def impute(dataset, full_data, sequential=True, predict_fun=predict_Py_RF,
+           ignore_ordered=True, max_iterations=25):
     info = category_dae.dataset_dimensions_info(dataset)
-    test_df, masks_usable = preprocess_dataframe(dataset[0], info)
+    test_df, masks_usable = preprocess_dataframe(
+        dataset[0], info, ignore_ordered=ignore_ordered)
 
     # Tenatively fill NAs
+    # This automatically also puts the probabilities of unordered categoricals
+    # and it should be OK with ordered categoricals
     test_df = test_df.fillna(test_df.mean())
 
     # Sort by increasing amount of missingness
-    classifications = sorted(test_df.keys(),
+    classifications = sorted(masks_usable.keys(),
                              key=lambda k: -masks_usable[k].sum())
-    test_df = test_df[classifications]
     masks_usable = masks_usable[classifications]
-    full_data = (full_data[0][classifications], full_data[1])
+
+    print("Start", utils.reconstruction_metrics(
+        dataset[0], full_data[0], postprocess_dataframe(test_df, info)))
+
+    num_idx = info["num_idx"]
+    cat_idx = info["cat_idx"]
 
     # Now perform the imputation procedure
-    print("RMSE {:d}:".format(0), utils.rmse(
-        ~(masks_usable.values), full_data[0].values, [test_df.values]))
-    prev_change = np.inf
-    for iter_i in range(1, 50):
+    prev_num_change = prev_cat_change = np.inf
+    predicted_df = test_df.copy()
+    dense_df = postprocess_dataframe(test_df, info, reindex_categories=False)
+    prev_nums = dense_df[num_idx].copy()
+    prev_cats = dense_df[cat_idx].copy()
+    for iter_i in range(1, max_iterations+1):
         updates = []
-        prev_vals = test_df.values.copy()
-        for j, key in enumerate(classifications):
-            mask = masks_usable[key].values
-            assert np.all(mask == masks_usable.values[:, j])
-            y = predict_Py_RF(test_df, mask, j)
+        for key in classifications:
+            mask = masks_usable[key]
+            y = predict_fun(test_df, dense_df, predicted_df, mask, key,
+                            info["cat_dummies"])
+
             if sequential:
-                test_df.values[~masks_usable.values[:, j], j] = y
+                update_ks = list(y.keys())
+                test_df.loc[~mask, update_ks] = y[~mask]
+                predicted_df.loc[:, update_ks] = y
+                dense_df = postprocess_dataframe(test_df, info,
+                                                 reindex_categories=False)
             else:
-                updates.append(y)
-            # If one by one:
-            # test_imp_num[~mask, j] = y
-            # print("\t\trmse:", utils.rmse(
-            #     ~(masks_usable.values), full_data[0].values, [test_imp_num]))
+                updates.append((~mask, y))
 
-        # updates is empty if not sequential
-        for j, y in enumerate(updates):
-            test_df.values[~masks_usable.values[:, j], j] = y
+        if not sequential:
+            for _mask, y in updates:
+                update_ks = list(y.keys())
+                test_df.loc[_mask, update_ks] = y[_mask]
+                predicted_df.loc[:, update_ks] = y
+            dense_df = postprocess_dataframe(test_df, info,
+                                             reindex_categories=False)
 
-        cur_change = np.sum((prev_vals-test_df.values)**2) / np.sum(
-            test_df.values**2)
-        if cur_change > prev_change:
-            test_df.values[...] = prev_vals
-            break
+        sq_diff = (prev_nums - test_df[num_idx])**2
+        cur_num_change = np.sum(sq_diff.values) / np.sum(
+            test_df[num_idx].values**2)
+
+        cur_cat_change = np.sum((dense_df[cat_idx] != prev_cats).values)
+
+        print("Iter", iter_i, utils.reconstruction_metrics(
+            dataset[0], full_data[0], postprocess_dataframe(test_df, info)),
+              cur_num_change, cur_cat_change)
+
+        if (cur_num_change < prev_num_change or
+                cur_cat_change < prev_cat_change):
+            prev_num_change = cur_num_change
+            prev_cat_change = cur_cat_change
+            prev_nums = dense_df[num_idx].copy()
+            prev_cats = dense_df[cat_idx].copy()
         else:
-            prev_change = cur_change
-        print("RMSE {:d}:".format(iter_i), utils.rmse(
-            ~(masks_usable.values), full_data[0].values, [test_df.values]))
-    print("RMSE Final:".format(iter_i), utils.rmse(
-        ~(masks_usable.values), full_data[0].values, [test_df.values]))
-    # TODO: genralise
-    test_df.chas = test_df.chas.map(np.floor).astype(np.int32)
-    return list(map(
-            lambda df: postprocess_dataframe(df, info),
-            [test_df]))
+            dense_df = pd.concat([prev_nums, prev_cats], axis=1)[
+                list(dense_df.keys())]
+            break
+    return [postprocess_dataframe(preprocess_dataframe(
+        dense_df, info, ignore_ordered=ignore_ordered,
+        reindex_categories=False)[0], info)]
 
 
 class TestPrePostprocessing(unittest.TestCase):
-    def test_values(self):
+    def test_values_reconstructed(self):
         dsets = datasets.datasets()
         for _, d in dsets.items():
             info = category_dae.dataset_dimensions_info(d)
@@ -172,10 +197,12 @@ class TestPrePostprocessing(unittest.TestCase):
 
 if __name__ == '__main__':
     _ds = datasets.datasets()
-    dsets = dict((x, _ds[x]) for x in ["BostonHousing"])
+    dsets = dict((x, _ds[x]) for x in ["Soybean"])
     baseline = datasets.benchmark({
-        #'MF_R_seq': datasets.memoize(lambda d, full_data: impute(
-        #    d, full_data, sequential=True)),
-        'MF_R_par': datasets.memoize(lambda d, full_data: impute(
-            d, full_data, sequential=False)),
+        'MF_Py_par': lambda _path, d, full_data: impute(
+            d, full_data, sequential=False),
+        'MF_Py_seq': lambda _path, d, full_data: impute(
+            d, full_data, sequential=True),
+        'MissForest': datasets.memoize(utils.impute_missforest)
     }, dsets, do_not_compute=False)
+    print(baseline)

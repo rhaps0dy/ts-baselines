@@ -59,32 +59,6 @@ def memoize(f):
         return f(*args, **kwargs)
     return memoized_f
 
-def percentage_falsely_classified(amputed_data, full_data, imputed_data):
-    """Percentage falsely classified. It only measures the performance on
-    entries that are present in the `full_data`"""
-    def key_filter(f):
-        df = full_data
-        return list(filter(lambda k: f(df[k].dtype), df.keys()))
-
-    def count_wrong_classifications(truth, attempts):
-        attempts = np.stack(attempts)
-        assert truth.shape[0] == attempts.shape[1]
-        assert len(truth.shape) == 1
-        wrong = 0
-        for t, a in zip(iter(truth), iter(attempts.T)):
-            wrong += (t != collections.Counter(a)
-                        .most_common(1)[0][0])
-        return wrong, len(truth)
-
-    int_keys = key_filter(lambda dt: dt == np.int32)
-    int_mask = (amputed_data[int_keys].values == utils.NA_int32)
-    int_mask &= (full_data[int_keys].values != utils.NA_int32)
-    wrong, total = count_wrong_classifications(
-        full_data[int_keys].values[int_mask],
-        list(i[int_keys].values[int_mask] for i in imputed_data))
-
-    return wrong, total
-
 
 def benchmark(impute_methods, datasets, do_not_compute=False,
               path="impute_benchmark"):
@@ -108,6 +82,9 @@ def benchmark(impute_methods, datasets, do_not_compute=False,
     del b, c, d, e
 
     np.random.shuffle(tests_to_perform)
+    # tests_to_perform = [(("Soybean", datasets["Soybean"]),
+    #                      (memoize(utils.mcar_total), 'MCAR_total'),
+    #                      .1, 'mean_std')]
 
     for ((data_name, (full_data, cat_keys)), (ampute_fun, ampute_fun_name),
          proportion, norm_type) in tests_to_perform:
@@ -153,48 +130,12 @@ def benchmark(impute_methods, datasets, do_not_compute=False,
                     full_data=(_fd, cat_keys))
 
             imputed_data = utils.unnormalise_dataframes(moments, _id)
-            # Normalised RMSE:
-            # For normalised RMSE, we take mean_std normalisation
-            # over the missing values only
-            numerical_keys = list(moments[0].keys())
-            if len(numerical_keys) == 0:
-                table['RMSE'][algo_name][norm_type][data_name]\
-                    [ampute_fun_name][str(proportion)] = np.nan
-                table['NRMSE'][algo_name][norm_type][data_name]\
-                    [ampute_fun_name][str(proportion)] = np.nan
-            else:
-                adv = amputed_data[numerical_keys].values
-                missing_mask = np.isnan(adv)
-                idv = list(df[numerical_keys].values[missing_mask]
-                        for df in imputed_data)
-                mean_idv = np.mean(idv, axis=0)
-                fdv = full_data[numerical_keys].values[missing_mask]
-                assert fdv.shape == mean_idv.shape
-                nrmse = (np.mean((fdv-mean_idv)**2) / np.var(fdv))**.5
-                assert len(nrmse.shape) == 0
+            d = utils.reconstruction_metrics(amputed_data, full_data,
+                                             imputed_data)
+            for k, v in d.items():
+                table[k][algo_name][norm_type][data_name]\
+                    [ampute_fun_name][str(proportion)] = v
 
-                table['NRMSE'][algo_name][norm_type][data_name]\
-                    [ampute_fun_name][str(proportion)] = nrmse
-
-                # RMSE of 0-1 normalised data
-                rmse_fd, rmse_ad, *rmse_id = utils.normalise_dataframes(
-                    full_data[numerical_keys],
-                    amputed_data[numerical_keys],
-                    *(i[numerical_keys] for i in imputed_data),
-                    method='min_max')[0]
-
-                table['RMSE'][algo_name][norm_type][data_name]\
-                    [ampute_fun_name][str(proportion)] = utils.mean_rmse(
-                        np.isnan(rmse_ad.values), rmse_fd.values,
-                        list(d.values for d in rmse_id))
-
-            wrong, total = percentage_falsely_classified(
-                amputed_data, full_data, imputed_data)
-            table['total_cats'][algo_name][norm_type][data_name]\
-                [ampute_fun_name][str(proportion)] = total
-            table['PFC'][algo_name][norm_type][data_name]\
-                [ampute_fun_name][str(proportion)] = (
-                    np.nan if total==0 else wrong/total)
 
     def get_multiindex(d, levels=3):
         if levels == 1:
@@ -226,8 +167,8 @@ def benchmark(impute_methods, datasets, do_not_compute=False,
                         index=[np.array(a) for a in rows],
                         columns=[np.array(a) for a in cols])
 if __name__ == '__main__':
-    _ds = datasets()
-    dsets = dict(filter(lambda t: t[0] in {sys.argv[2]},
-                        _ds.items()))
+    dsets = datasets()
     baseline = benchmark({
+        'MissForest': memoize(utils.impute_missforest),
     }, dsets, do_not_compute=False)
+    print(baseline)
