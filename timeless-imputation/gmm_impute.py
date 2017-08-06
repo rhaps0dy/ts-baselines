@@ -59,6 +59,59 @@ def mask_matrix(matrix, m1, m2):
     return out
 
 
+def conditional_mog(m, inp, mask, cutoff=1.0):
+    if np.all(mask):
+        return {'means': m['means'],
+                'covariances': m['covariances'],
+                'weights': m['weights']}
+    if np.all(~mask):
+        return {'means': np.zeros([1, 0], dtype=inp.dtype),
+                'covariances': np.zeros([1, 0, 0], dtype=inp.dtype),
+                'weights': np.ones([1], dtype=inp.dtype)}
+    # $\tau$ in "Imputation through finite Gaussian mixture models" (Di
+    # Zio et al., 2007)
+    w = m['weights'] * gaussian_pdf(inp, m['means'], m['covariances'])
+
+    normaliser = np.sum(w)
+    if normaliser == 0.0:
+        w = m['weights']
+    else:
+        w /= normaliser
+
+    if cutoff < 1.0:
+        w_i = np.argsort(w)[::-1]
+        m_keep = np.zeros_like(w, dtype=np.bool)
+        m_keep[w_i] = np.cumsum(w[w_i]) < cutoff
+        # Move one forward, so that the last True item is just above the cutoff
+        m_keep[w_i] = np.concatenate([[True], m_keep[w_i[:-1]]])
+        # Renormalise cluster weights that are left
+        weights = w[m_keep]
+        del w
+        means = m['means'][m_keep, :]
+        covariances = m['covariances'][m_keep, :, :]
+
+        normaliser = np.sum(weights)
+        assert normaliser > 0.0
+        weights /= normaliser
+    else:
+        weights = w
+        means = m['means']
+        covariances = m['covariances']
+
+    K_12 = mask_matrix(covariances, mask, ~mask)
+    K_22 = mask_matrix(covariances, ~mask, ~mask)
+    K_22__1 = np.linalg.inv(K_22)
+    K_1222 = K_12 @ K_22__1
+    K_21 = mask_matrix(covariances, ~mask, mask)
+    K_11 = mask_matrix(covariances, mask, mask)
+
+    diff = np.expand_dims(inp[~mask] - means[:, ~mask], axis=2)
+    return {
+        'means': means[:, mask] + np.squeeze(K_1222 @ diff, axis=2),
+        'covariances': K_11 - K_1222 @ K_21,
+        'weights': weights}
+
+
 def _gmm_impute(m, inputs, n_impute=100, sample_impute=False):
     "Impute inputs using Gaussian Mixture Model m"
     if sample_impute:
@@ -69,34 +122,8 @@ def _gmm_impute(m, inputs, n_impute=100, sample_impute=False):
         if not np.any(mask):
             continue
 
-        d = {}
-        if not np.any(~mask):
-            d['means'] = m['means']
-            d['covariances'] = m['covariances']
-            d['weights'] = m['weights']
-        else:
-            g_pdf = gaussian_pdf(inp, m['means'], m['covariances'])
-            # $\tau$ in "Imputation through finite Gaussian mixture models" (Di
-            # Zio et al., 2007)
-            d['weights'] = m['weights'] * g_pdf
-            normaliser = np.sum(d['weights'], axis=0, keepdims=False)
-            if normaliser == 0.0:
-                d['weights'][...] = 1/d['weights'].shape[-1]
-            else:
-                d['weights'] /= normaliser
-
-            K_12 = mask_matrix(m['covariances'], mask, ~mask)
-            K_22 = mask_matrix(m['covariances'], ~mask, ~mask)
-            K_22__1 = np.linalg.inv(K_22)
-            K_1222 = K_12 @ K_22__1
-            K_21 = mask_matrix(m['covariances'], ~mask, mask)
-            K_11 = mask_matrix(m['covariances'], mask, mask)
-
-            diff = np.expand_dims(inp[~mask] - m['means'][:, ~mask], axis=2)
-            d['means'] = m['means'][:, mask] + np.squeeze(K_1222 @ diff, axis=2)
-            d['covariances'] = K_11 - K_1222 @ K_21
-
-            outputs[:, i, ~mask] = inp[~mask]
+        d = conditional_mog(m, inp, mask, cutoff=1.0)
+        outputs[:, i, ~mask] = inp[~mask]
         if sample_impute:
             outputs[:, i, mask] = samples_from_mixture(d, n_impute)
         else:

@@ -1,5 +1,5 @@
 import numpy as np
-import tensorflow as tf
+#import tensorflow as tf
 from add_variable_scope import add_variable_scope
 import unittest
 
@@ -7,6 +7,9 @@ NA_int32 = -(1 << 31)
 # We can modify post_NA_int32 to allow for categories to include an extra NaN
 # category. Just make it 0
 post_NA_int32 = NA_int32
+
+class tf:
+    float32 = None
 
 
 def _embedding_initializer(n_cats, n_dims, tf_float):
@@ -204,6 +207,8 @@ def postprocess_dataframe(dataframe, input_layer):
     value."""
     for c, m in input_layer["_cat_maps"].items():
         dataframe.loc[:, c] = dataframe[c].map(m.__getitem__).astype(np.int32)
+    for c, v in input_layer["_add_columns_after"].items():
+        dataframe.loc[:, c] = np.int32(v)
     return dataframe
 
 

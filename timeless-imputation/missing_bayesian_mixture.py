@@ -213,6 +213,7 @@ def impute_bayes_gmm(log_path, dataset, number_imputations=100, full_data=None,
         for attr in ['weights', 'means', 'covariances']:
             d[attr] = getattr(m, attr+'_')
         pu.dump(d, params_path)
+        del m._tqdm
         pu.dump(m, os.path.join(log_path, 'model.pkl.gz'))
         del m
 
@@ -230,6 +231,35 @@ def impute_bayes_gmm(log_path, dataset, number_imputations=100, full_data=None,
     if not os.path.exists(impute_path):
         pu.dump(ret, impute_path)
     return ret
+
+
+def mf_initial_impute(log_path, df, info, n_components=15, n_init=5,
+                      init_params='random'):
+    params_path = os.path.join(log_path, 'params.pkl.gz')
+    if os.path.exists(params_path):
+        d = pu.load(params_path)
+    else:
+        m = BayesianMixtureMissingData(n_components=n_components,
+                                       n_init=n_init,
+                                       init_params=init_params)
+        m._tqdm = tqdm()
+        m.fit(df.values)
+        d = {}
+        for attr in ['weights', 'means', 'covariances']:
+            d[attr] = getattr(m, attr+'_')
+        pu.dump(d, params_path)
+        del m._tqdm
+        pu.dump(m, os.path.join(log_path, 'model.pkl.gz'))
+        del m
+    _id = gmm_impute._gmm_impute(d, df.values)
+    imputed_data = np.mean(_id, axis=0)
+    imputed_df = datasets.dataframe_like(df, imputed_data)
+    cat_keys = list(info['cat_dummies'].keys())
+    assert all(len(info['cat_dummies'][k]) == 1 for k in cat_keys), \
+        "Multiclass features not implemented yet"
+    imputed_df[cat_keys] = imputed_df[cat_keys].apply(
+        lambda a: np.clip(a, 0, 1))
+    return imputed_df
 
 
 if __name__ == 'OLD__main__':
@@ -260,10 +290,12 @@ if __name__ == 'OLD__main__':
 
 if __name__ == '__main__':
     _ds = datasets.datasets()
-    dsets = dict(filter(lambda t: t[0] in {"LetterRecognition"},
+    dsets = dict(filter(lambda t: t[0] in {"Ionosphere"},
                         _ds.items()))
     baseline = datasets.benchmark({
-        'BGMM_10': lambda p, d, full_data: impute_bayes_gmm(
+        'BGMM_20': lambda p, d, full_data: impute_bayes_gmm(
             p, d, full_data=full_data, number_imputations=100,
-            n_components=10)
+            n_components=20),
+        'MissForest': datasets.memoize(utils.impute_missforest),
     }, dsets, do_not_compute=False)
+    print(baseline)

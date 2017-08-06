@@ -169,11 +169,14 @@ def _rescale_dataframes(dataframes, mean, std, rescale_f):
 def normalise_dataframes(*dataframes, method='mean_std'):
     """Normalise all passed dataframes with the mean and std of the first, or
     by the min and max of the first."""
+    def get_num_keys(df):
+        return list(filter(lambda k: df[k].dtype == np.float64, df.keys()))
+
     df = dataframes[0]
-    assert all(sorted(df.keys()) == sorted(a.keys())
-               for a in dataframes), "All dataframes must have the same columns"
-    numerical_columns = list(filter(lambda k: df[k].dtype == np.float64,
-                                    df.keys()))
+    numerical_columns = get_num_keys(df)
+    assert all(sorted(numerical_columns) == sorted(get_num_keys(a))
+               for a in dataframes), """All dataframes must have the same
+               numerical columns"""
     if method == 'mean_std':
         mean = df[numerical_columns].mean(axis=0)
         std = df[numerical_columns].std(axis=0)
