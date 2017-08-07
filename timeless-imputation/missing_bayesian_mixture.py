@@ -251,15 +251,37 @@ def mf_initial_impute(log_path, df, info, n_components=15, n_init=5,
         del m._tqdm
         pu.dump(m, os.path.join(log_path, 'model.pkl.gz'))
         del m
-    _id = gmm_impute._gmm_impute(d, df.values)
+
+    # We will estimate the integral of the softmax so we take a sample of the
+    # categorical variables:
+
+    categoric_indices = []
+    df_keys = list(df.keys())
+    cat_keys = list(info['cat_dummies'].keys())
+    for k in cat_keys:
+        for kk in info['cat_dummies'][k]:
+            categoric_indices.append(df_keys.index(kk))
+    _id = gmm_impute._gmm_impute(d, df.values, sample_impute=categoric_indices)
+    for k in cat_keys:
+        # Monte-Carlo integral of softmax
+        if len(info['cat_dummies']) > 1:
+            min_i = 1000000
+            max_i = 0
+            for kk in info['cat_dummies'][k]:
+                min_i = min(min_i, df_keys.index(kk))
+                max_i = max(max_i, df_keys.index(kk))
+            print(k, min_i, max_i, df_keys)
+            _id[:, min_i:max_i+1] = np.exp(_id[:, min_i:max_i+1])
+            _id[:, min_i:max_i+1] /= np.sum(_id[:, min_i:max_i+1], axis=2, keepdims=True)
+        else:
+            i = cat_keys.index(kk)
+            _id[:, i] = np.round(_id[:, i]).clip(0, 1)
+
     imputed_data = np.mean(_id, axis=0)
     imputed_df = datasets.dataframe_like(df, imputed_data)
-    cat_keys = list(info['cat_dummies'].keys())
-    assert all(len(info['cat_dummies'][k]) == 1 for k in cat_keys), \
-        "Multiclass features not implemented yet"
-    imputed_df[cat_keys] = imputed_df[cat_keys].apply(
-        lambda a: np.clip(a, 0, 1))
-    return imputed_df
+
+    return imputed_df, imputed_df.applymap(
+        lambda x: 1.0 if np.isnan(x) else 0.0), d
 
 
 if __name__ == 'OLD__main__':

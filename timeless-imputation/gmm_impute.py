@@ -68,6 +68,10 @@ def conditional_mog(m, inp, mask, cutoff=1.0):
         return {'means': np.zeros([1, 0], dtype=inp.dtype),
                 'covariances': np.zeros([1, 0, 0], dtype=inp.dtype),
                 'weights': np.ones([1], dtype=inp.dtype)}
+    # return {'means': np.zeros([1, np.sum(mask)], dtype=inp.dtype),
+    #         'covariances': np.eye(np.sum(mask))[np.newaxis, :, :],
+    #         'weights': np.ones([1], dtype=inp.dtype)}
+
     # $\tau$ in "Imputation through finite Gaussian mixture models" (Di
     # Zio et al., 2007)
     w = m['weights'] * gaussian_pdf(inp, m['means'], m['covariances'])
@@ -112,7 +116,7 @@ def conditional_mog(m, inp, mask, cutoff=1.0):
         'weights': weights}
 
 
-def _gmm_impute(m, inputs, n_impute=100, sample_impute=False):
+def _gmm_impute(m, inputs, n_impute=100000, sample_impute=False):
     "Impute inputs using Gaussian Mixture Model m"
     if sample_impute:
         outputs = np.stack([inputs] * n_impute, axis=0)
@@ -124,9 +128,10 @@ def _gmm_impute(m, inputs, n_impute=100, sample_impute=False):
 
         d = conditional_mog(m, inp, mask, cutoff=1.0)
         outputs[:, i, ~mask] = inp[~mask]
+        outputs[:, i, mask] = np.sum(
+            d['means'] * d['weights'][:, np.newaxis], axis=0)
         if sample_impute:
-            outputs[:, i, mask] = samples_from_mixture(d, n_impute)
-        else:
-            outputs[0, i, mask] = np.sum(
-                d['means'] * d['weights'][:, np.newaxis], axis=0)
+            _mask = np.zeros_like(mask, dtype=np.bool)
+            _mask[sample_impute] = True
+            outputs[:, i, mask & _mask] = samples_from_mixture(d, n_impute)[:, _mask[mask]]
     return outputs
