@@ -20,14 +20,10 @@ def uncertain_point(inp, mog, cutoff, M, expand_dims=False,
 def with_d_uncertain_point(d, inp, mis, M, expand_dims=False,
                      single_gaussian_moment_matching=False):
     if single_gaussian_moment_matching:
-    # https://stats.stackexchange.com/questions/16608/what-is-the-variance-of-the-weighted-mixture-of-two-gaussians
-        ms = d['means'] * d['weights'][:, np.newaxis]
-        mean = np.sum(ms, axis=0)
-        var_mix = np.sum(d['covariances'] * np.eye(d['covariances'].shape[1]), axis=2).sum(axis=0)
-        var = var_mix + np.sum(ms * d['means'], axis=0) - mean
-        d['weights'] = np.ones([1], dtype=d['weights'].dtype)
+        mean, var = gmm.single_gaussian_moment_matching(d)
         d['means'] = mean[np.newaxis, :]
-        d['covariances'] = np.diag(var_mix)[np.newaxis, :, :]
+        d['covariances'] = np.diag(var)[np.newaxis, :, :]
+        d['weights'] = np.ones([1], dtype=d['weights'].dtype)
 
     d['mis'] = mis
     obs = ~mis
@@ -85,14 +81,12 @@ def rbf_uncertain(x, v, M_):
 class UncertainMoGRBFWhite(Kern):
     def __init__(self, input_dim, mog, white_var=1., rbf_var=1.,
                  lengthscale=1., ARD=False, cutoff=0.99, single_gaussian=False,
-                 active_dims=None, name='uncertainMoG', X_train=None, X_test=None):
+                 active_dims=None, name='uncertainMoG'):
         """For this kernel, to save computation, we are going to assume the
         dimension 0 of the inputs bears an ID of the point. Thus, X.shape[1] ==
         input_dim + 1.
         `cutoff` represents the % of the variance that the MoG must represent
         before it is cut off.
-        X_train and X_test are pre-computed lists of MoG per point. If a
-        dimension of .K matches one of their lengths, they get re-used.
         """
         super(UncertainMoGRBFWhite, self).__init__(input_dim, active_dims, name)
         self.input_dim = input_dim
@@ -119,13 +113,13 @@ class UncertainMoGRBFWhite(Kern):
 
     @Cache_this(limit=3, ignore_args=())
     def K(self, X, X2=None):
-        start = time.time()
+        #start = time.time()
         X = list(map(lambda inp: uncertain_point(
             inp, self.mog, self.cutoff, self.M,
             single_gaussian_moment_matching=self.single_gaussian), X))
-        print("To compute map took me:", time.time() - start)
+        #print("To compute map took me:", time.time() - start)
 
-        start = time.time()
+        #start = time.time()
         if X2 is None:
             out = np.zeros([len(X), len(X)])
             for i, x in enumerate(X):
@@ -144,7 +138,7 @@ class UncertainMoGRBFWhite(Kern):
                 for j, x2 in enumerate(X2):
                     out[i, j] = rbf_uncertain(x, x2, self.M)
             out *= self.rbf_var
-        print("To compute matrix took me:", time.time() - start)
+        #print("To compute matrix took me:", time.time() - start)
         return out
 
     def Kdiag(self, X):
@@ -157,7 +151,7 @@ class UncertainMoGRBFWhite(Kern):
 class UncertainGaussianRBFWhite(UncertainMoGRBFWhite):
     def __init__(self, input_dim, mog, white_var=1., rbf_var=1.,
                  lengthscale=1., ARD=False, active_dims=None,
-                 name='uncertainMoG', X_train=None, X_test=None):
+                 name='uncertainGaussian'):
         """
         Same as UncertainMoGRBFWhite but with a single Gaussian.
         """
@@ -167,6 +161,8 @@ class UncertainGaussianRBFWhite(UncertainMoGRBFWhite):
             # The input will be the means and the independent covariances
             self.input_dim *= 2
             assert active_dims is None
+        else:
+            print("WARNING: you passed a MoG to a GaussianRBFWhite kernel")
         Kern.__init__(self, self.input_dim, active_dims, name)
 
         self.white_var = Param('white_var', white_var)
@@ -222,16 +218,16 @@ class UncertainGaussianRBFWhite(UncertainMoGRBFWhite):
         if self.mog is None:
             X_var = X[:, X.shape[1]//2:]
             X = X[:, :X_var.shape[1]]
+            assert X.shape == X_var.shape
             mis = X_var != 0.
 
             X_points = []
             weights = np.ones([1], dtype=X.dtype)
             for i in range(len(X)):
                 d = {'weights': weights,
-                     'means': X[i:i+1, mis],
-                     'covariances': np.diag(X_var[i:i+1, mis])}
-                X_points.append(with_d_uncertain_point(
-                    d, X[i:i+1], mis, self.M))
+                     'means': X[i:i+1, mis[i]],
+                     'covariances': np.diag(X_var[i, mis[i]])[np.newaxis, :, :]}
+                X_points.append(with_d_uncertain_point(d, X[i], mis[i], self.M))
         else:
             X_points = list(map(lambda inp: uncertain_point(inp, self.mog,
                 1., self.M, single_gaussian_moment_matching=True), X))
@@ -239,7 +235,7 @@ class UncertainGaussianRBFWhite(UncertainMoGRBFWhite):
 
     @Cache_this(limit=3, ignore_args=())
     def K(self, X, X2=None):
-        start = time.time()
+        #start = time.time()
         b, B_2, norm, sum_contrib, mu_sig_mu, sig_mu, mu_obs, Cinv = \
             self.points_statistics(X)
 
@@ -249,8 +245,8 @@ class UncertainGaussianRBFWhite(UncertainMoGRBFWhite):
         x_sum_contrib = sum_contrib[:, np.newaxis]
 
         if X2 is None:
-            print("To compute map took me:", time.time() - start)
-            start = time.time()
+            #print("To compute map took me:", time.time() - start)
+            #start = time.time()
             v_sig_mu = sig_mu[np.newaxis, :]
             v_mu_sig_mu = mu_sig_mu[np.newaxis, :]
             v_mu_obs = mu_obs[np.newaxis, :]
@@ -260,8 +256,8 @@ class UncertainGaussianRBFWhite(UncertainMoGRBFWhite):
             del norm, sum_contrib, mu_sig_mu, sig_mu, mu_obs, Cinv
             _, _, v_norm, _, v_mu_sig_mu, v_sig_mu, v_mu_obs, Cinv = \
                 self.points_statistics(X2)
-            print("To compute map (rectangular) took me:", time.time() - start)
-            start = time.time()
+            #print("To compute map (rectangular) took me:", time.time() - start)
+            #start = time.time()
             v_sig_mu = v_sig_mu[np.newaxis, :]
             v_mu_sig_mu = v_mu_sig_mu[np.newaxis, :]
             v_mu_obs = v_mu_obs[np.newaxis, :]
@@ -280,8 +276,7 @@ class UncertainGaussianRBFWhite(UncertainMoGRBFWhite):
         if X2 is None:
             out = (out + out.T) / 2
             out.flat[::len(X)+1] = self.rbf_var + self.white_var
-        print("To compute matrix took me:", time.time() - start)
-        print(out.shape)
+        #print("To compute matrix took me:", time.time() - start)
         assert out.shape == (len(X), len(X) if X2 is None else len(X2))
         return out
 

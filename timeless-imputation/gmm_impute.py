@@ -118,6 +118,16 @@ def conditional_mog(m, inp, mask, cutoff=1.0):
         'covariances': K_11 - K_1222 @ K_21,
         'weights': weights}
 
+def single_gaussian_moment_matching(d):
+    ms = d['means'] * d['weights'][:, np.newaxis]
+    mean = np.sum(ms, axis=0)
+    # Take only the diagonal of covariances
+    # https://stats.stackexchange.com/questions/16608/what-is-the-variance-of-the-weighted-mixture-of-two-gaussians
+    variances = np.sum(d['covariances'] * np.eye(d['covariances'].shape[1]), axis=2)
+    var_mix = np.sum(variances * d['weights'][:, np.newaxis], axis=0)
+    var = var_mix + np.sum(ms * d['means'], axis=0) - mean
+    return mean, var
+
 
 def _gmm_impute(m, inputs, n_impute, sample_impute=False):
     "Impute inputs using Gaussian Mixture Model m"
@@ -125,16 +135,20 @@ def _gmm_impute(m, inputs, n_impute, sample_impute=False):
         outputs = np.stack([inputs] * n_impute, axis=0)
     else:
         outputs = np.expand_dims(inputs.copy(), axis=0)
+    outputs_var = np.zeros_like(inputs)
     for i, (inp, mask) in enumerate(zip(inputs, np.isnan(inputs))):
         if not np.any(mask):
             continue
 
         d = conditional_mog(m, inp, mask, cutoff=1.0)
         outputs[:, i, ~mask] = inp[~mask]
-        outputs[:, i, mask] = np.sum(
-            d['means'] * d['weights'][:, np.newaxis], axis=0)
+
+        mean, var = single_gaussian_moment_matching(d)
+        outputs[:, i, mask] = mean
+        outputs_var[i, mask] = var
+
         if sample_impute:
             _mask = np.zeros_like(mask, dtype=np.bool)
             _mask[sample_impute] = True
             outputs[:, i, mask & _mask] = samples_from_mixture(d, n_impute)[:, _mask[mask]]
-    return outputs
+    return outputs, outputs_var

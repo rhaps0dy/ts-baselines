@@ -10,55 +10,110 @@ import pickle_utils as pu
 
 
 class RF_class(RandomForestClassifier):
-    def __init__(self, n_features):
+    def __init__(self, n_features, mog):
         super(RF_class, self).__init__(
             n_estimators=100, n_jobs=-1,
             max_features=int(np.floor(n_features**.5)), bootstrap=False,
             min_samples_split=5)
-    def predict_proba(self, X):
+    def predict_proba(self, X, X_var):
         p = super(RF_class, self).predict_proba(X)
         if p.shape[1] == 2:
             return p[:, 1:2]
         return p
 
+    def fit(self, X, X_var, y, optimize=None):
+        return super(RF_class, self).fit(X, y)
 
-def RF_reg(n_features):
-    return RandomForestRegressor(
-        n_estimators=100, n_jobs=-1,
-        max_features=int(np.floor(n_features**.5)), bootstrap=False,
-        min_samples_split=5)
+    def predict(self, X, X_var):
+        return super(RF_class, self).predict(X)
 
 
-def predict(df, dense_df, prev_df, train_mask, key, cat_dummies,
-            classifier, regressor, use_previous_prediction=False, df_var=None):
-    if not use_previous_prediction:
-        del prev_df  # To prevent bugs
+class RF_reg(RandomForestRegressor):
+    def __init__(self, n_features, mog):
+        super(RF_reg, self).__init__(
+            n_estimators=100, n_jobs=-1,
+            max_features=int(np.floor(n_features**.5)), bootstrap=False,
+            min_samples_split=5)
+
+    def predict(self, X, X_var):
+        return super(RF_reg, self).predict(X)
+
+    def fit(self, X, X_var, y, optimize=None):
+        return super(RF_reg, self).fit(X, y)
+
+
+def predict(df, df_var, other_info, dense_df, prev_df, train_mask, key, cat_dummies,
+            classifier, regressor, use_previous_prediction=False, optimize=True):
+    #if not use_previous_prediction:
+    #    del prev_df  # To prevent bugs
+    assert not use_previous_prediction
 
     if key in cat_dummies:
         X = df.drop(cat_dummies[key], axis=1)
+        X_var = df_var.drop(cat_dummies[key], axis=1)
+        list_keys = list(df.keys())
+        prev_i = None
+        for c in cat_dummies[key]:
+            i = list_keys.index(c)
+            if prev_i is not None:
+                assert i == prev_i + 1, "cat_dummy keys are contiguous"
+            prev_i = i
+
+        key_first = list_keys.index(cat_dummies[key][0])
+        key_last = list_keys.index(cat_dummies[key][-1])
+
         if use_previous_prediction:
             X = pd.concat([X, prev_df[cat_dummies[key]]], axis=1)
         y = dense_df[key]
-        rf = classifier(X.shape[1])
+        method = classifier
     else:
         X = df.drop(key, axis=1)
+        X_var = df_var.drop(key, axis=1)
+        key_first = key_last = list(df.keys()).index(key)
         if use_previous_prediction:
             X = pd.concat([X, prev_df[[key]]], axis=1)
         y = df[key]
-        rf = regressor(X.shape[1])
-    rf.fit(X[train_mask], y[train_mask])
+        method = regressor
+
+    if other_info is not None:
+        covs_columns = np.concatenate([
+            other_info['covariances'][:, :key_first],
+            other_info['covariances'][:, key_last+1:]], axis=1)
+        covs = np.concatenate([
+            covs_columns[:, :, :key_first],
+            covs_columns[:, :, key_last+1:]], axis=2)
+
+        mog = {'weights': other_info['weights'],
+                'means': np.concatenate([
+                    other_info['means'][:, :key_first],
+                    other_info['means'][:, key_last+1:]], axis=1),
+                'covariances': covs}
+    else:
+        mog = None
+
+    rf = method(X.shape[1], mog)
+    rf.fit(X[train_mask], X_var[train_mask], y[train_mask], optimize=optimize)
 
     if key in cat_dummies:
         n_cats = y.max() + 1
         update_ks = cat_dummies[key]
         if len(cat_dummies[key]) == 1 and n_cats > 2:
-            out = rf.predict(X)[:, np.newaxis]
+            out = rf.predict(X[~train_mask], X_var[~train_mask])[:, np.newaxis]
         else:
-            out = rf.predict_proba(X)
+            out = rf.predict_proba(X[~train_mask], X_var[~train_mask])
     else:
         update_ks = [key]
-        out = rf.predict(X)
-    return pd.DataFrame(out, index=y.index, columns=update_ks)
+        out = rf.predict(X[~train_mask], X_var[~train_mask])
+    if isinstance(out, tuple):
+        to_return = []
+        for i, o in enumerate(out):
+            if not np.any(np.isnan(o)):
+                to_return.append(pd.DataFrame(o, index=y.index[~train_mask],
+                                              columns=update_ks))
+        if len(to_return) > 1:
+            return tuple(to_return)
+        return to_return[0]
+    return pd.DataFrame(out, index=y.index[~train_mask], columns=update_ks)
 
 
 def preprocess_dataframe(df, info, ignore_ordered=False,
@@ -103,7 +158,7 @@ def postprocess_dataframe(df, info, reindex_categories=True):
         if (n_dims == 1 and not info["ignore_ordered"]) or n_cats == 2:
             assert len(k_dum) == 1
             f = (df[k_dum[0]].where(np.isfinite, other=0).round()
-                 .astype(np.int32))
+                 .clip(0, n_cats-1).astype(np.int32))
         else:
             k_dum_d = dict(zip(k_dum, range(len(k_dum))))
             # Set to 0 temporarily to be a valid category,
@@ -121,13 +176,17 @@ def postprocess_dataframe(df, info, reindex_categories=True):
 def mean_impute(log_path, df, info):
     """This automatically also puts the probabilities of unordered categoricals
     and it should be OK with ordered categoricals"""
-    return df.fillna(df.mean())
+    return (df.fillna(df.mean()),
+            (df.applymap(lambda x: np.nan if np.isnan(x) else 0.0)
+             .fillna(df.std())),
+            None)
 
 
 def impute(log_path, dataset, full_data, sequential=True,
            predictors=(RF_class, RF_reg), initial_impute=mean_impute,
            ignore_ordered=True, print_progress=True, max_iterations=25,
-           use_previous_prediction=False, impute_name_replace=None):
+           use_previous_prediction=False, impute_name_replace=None,
+           optimize_gp=True):
     if not os.path.exists(log_path):
         os.mkdir(log_path)
     memoized_fname = os.path.join(log_path, "mf_out.pkl.gz")
@@ -145,16 +204,18 @@ def impute(log_path, dataset, full_data, sequential=True,
         impute_log_path = log_path.replace(*impute_name_replace)
     if not os.path.exists(impute_log_path):
         os.mkdir(impute_log_path)
-    test_df = initial_impute(impute_log_path, test_df, info)
+    test_df, test_df_var, test_df_other_first_iteration = initial_impute(
+        impute_log_path, test_df, info)
 
     # Sort by increasing amount of missingness
-    classifications = sorted(masks_usable.keys(),
-                             key=lambda k: -masks_usable[k].sum())
-    masks_usable = masks_usable[classifications]
+    #classifications = sorted(masks_usable.keys(),
+    #                         key=lambda k: -masks_usable[k].sum())
+    #masks_usable = masks_usable[classifications]
 
     if print_progress:
         print("Start", utils.reconstruction_metrics(
             dataset[0], full_data[0], postprocess_dataframe(test_df, info)))
+    pu.dump((test_df, test_df_var), os.path.join(log_path, 'iter_0.pkl.gz'))
 
     num_idx = info["num_idx"]
     cat_idx = info["cat_idx"]
@@ -167,32 +228,52 @@ def impute(log_path, dataset, full_data, sequential=True,
     prev_cats = dense_df[cat_idx].copy()
     for iter_i in range(1, max_iterations+1):
         updates = []
-        for key in classifications:
+        for key in masks_usable.keys():
             mask = masks_usable[key]
-            y = predict(test_df, dense_df, predicted_df, mask, key,
-                        info["cat_dummies"], classifier=RF_class,
-                        regressor=RF_reg,
-                        use_previous_prediction=use_previous_prediction)
-            #print("RF_RMSE:", utils.rmse([True]*np.sum(~mask),
-            #                             full_data[0].loc[~mask, key].values,
-            #                             [y[~mask].values.flatten()]))
+            y = predict(test_df, test_df_var, test_df_other_first_iteration,
+                        dense_df, predicted_df, mask, key, info["cat_dummies"],
+                        classifier=predictors[0], regressor=predictors[1],
+                        use_previous_prediction=use_previous_prediction,
+                        optimize=optimize_gp)
+            print("model_RMSE:", utils.rmse([True]*np.sum(~mask),
+                                         full_data[0].loc[~mask, key].values,
+                                         [(y[0] if isinstance(y, tuple) else y)
+                                          .values.flatten()]))
+            rf_y = predict(test_df, test_df_var, test_df_other_first_iteration,
+                        dense_df, predicted_df, mask, key, info["cat_dummies"],
+                           classifier=RF_class, regressor=RF_reg,
+                        use_previous_prediction=use_previous_prediction,
+                        optimize=optimize_gp)
+            print("rf_RMSE:", utils.rmse([True]*np.sum(~mask),
+                                         full_data[0].loc[~mask, key].values,
+                                         [rf_y.values.flatten()]))
+            if isinstance(y, tuple):
+                y, y_var = y
+            else:
+                y_var = y.applymap(lambda _: 0.0)
 
             if sequential:
                 update_ks = list(y.keys())
-                test_df.loc[~mask, update_ks] = y[~mask]
-                predicted_df.loc[:, update_ks] = y
+                test_df.loc[~mask, update_ks] = y# [~mask]
+                test_df_var.loc[~mask, update_ks] = y_var# [~mask]
+                # predicted_df.loc[:, update_ks] = y
                 dense_df = postprocess_dataframe(test_df, info,
                                                  reindex_categories=False)
             else:
-                updates.append((~mask, y))
+                updates.append((~mask, y, y_var))
 
         if not sequential:
-            for _mask, y in updates:
+            for _mask, y, y_var in updates:
                 update_ks = list(y.keys())
-                test_df.loc[_mask, update_ks] = y[_mask]
-                predicted_df.loc[:, update_ks] = y
+                test_df.loc[_mask, update_ks] = y# [_mask]
+                test_df_var.loc[_mask, update_ks] = y_var# [~mask]
+                # predicted_df.loc[:, update_ks] = y
             dense_df = postprocess_dataframe(test_df, info,
                                              reindex_categories=False)
+
+        # The additional information, for example the MoG model, only lasts for
+        # the first iteration.
+        test_df_other_first_iteration = None
 
         sq_diff = (prev_nums - test_df[num_idx])**2
         cur_num_change = np.sum(sq_diff.values) / np.sum(
@@ -204,6 +285,8 @@ def impute(log_path, dataset, full_data, sequential=True,
             print("Iter", iter_i, utils.reconstruction_metrics(
                 dataset[0], full_data[0], postprocess_dataframe(test_df, info)),
                 cur_num_change, cur_cat_change)
+        pu.dump((test_df, test_df_var), os.path.join(
+            log_path, 'iter_{:d}.pkl.gz'.format(iter_i)))
 
         if (cur_num_change < prev_num_change or
                 cur_cat_change < prev_cat_change):
@@ -239,40 +322,27 @@ if __name__ == '__main__':
     import missing_bayesian_mixture as mbm
 
     _ds = datasets.datasets()
-    #dsets = dict((x, _ds[x]) for x in ["Soybean", "BostonHousing",
-    #                                   "BreastCancer", "Ionosphere", "Servo"])
-    dsets = dict((x, _ds[x]) for x in ["BostonHousing", "Ionosphere"])
+    dsets = dict((x, _ds[x]) for x in ["Servo", # "BostonHousing", "Ionosphere",
+                                       ])  # "BreastCancer", "Soybean"])
+    #dsets = dict((x, _ds[x]) for x in ["Servo"])
     baseline = datasets.benchmark({
-        #'MF_Py_par': datasets.memoize(lambda d, full_data: impute(
-        #    d, full_data, sequential=False, print_progress=True)),
-        #'MF_Py_seq': datasets.memoize(lambda d, full_data: impute(
-        #    d, full_data, sequential=True, print_progress=True)),
-        'MF_py': lambda log, d, full_data: impute(
-            log, d, full_data, sequential=False, print_progress=True,
-            use_previous_prediction=False),
-        'mean': lambda log, d, full_data: impute(
-            log, d, full_data, max_iterations=0),
-        'GMM': lambda log, d, full_data: impute(
-            log, d, full_data, max_iterations=0,
-            initial_impute=mbm.mf_initial_impute),
-        #'GMM_5res': lambda log, d, full_data: impute(
+        #'MF_py': lambda log, d, full_data: impute(
+        #    log, d, full_data, sequential=False, print_progress=True,
+        #    use_previous_prediction=False),
+        #'mean': lambda log, d, full_data: impute(
+        #    log, d, full_data, max_iterations=0),
+        #'GMM': lambda log, d, full_data: impute(
         #    log, d, full_data, max_iterations=0,
         #    initial_impute=mbm.mf_initial_impute),
-        #'MF_GMM_5res': lambda log, d, full_data: impute(
+        'GMM_raw': lambda log, d, full_data: impute(
+            log, d, full_data, max_iterations=0,
+            impute_name_replace=('GMM_raw', 'GMM'),
+            initial_impute=lambda *args, **kwargs: mbm.mf_initial_impute(
+                *args, **kwargs, ignore_categories=True)),
+        ##'MF_GMM': lambda log, d, full_data: impute(
         #    log, d, full_data, initial_impute=mbm.mf_initial_impute,
         #    sequential=False, print_progress=True,
-        #    use_previous_prediction=False, impute_name_replace=('MF_GMM_5res', 'GMM_5res')),
-        'MF_GMM': lambda log, d, full_data: impute(
-            log, d, full_data, initial_impute=mbm.mf_initial_impute,
-            sequential=False, print_progress=True,
-            use_previous_prediction=False, impute_name_replace=('MF_GMM', 'GMM')),
-        #'BGMM_20': lambda p, d, full_data: mbm.impute_bayes_gmm(
-        #    p, d, full_data=full_data, number_imputations=100,
-        #    n_components=20),
-        'MissForest': datasets.memoize(utils.impute_missforest),
-        #'GP_naive': datasets.memoize(lambda d, full_data: impute(
-        #    d, full_data, sequential=False, print_progress=True,
-        #    predictors=(mfGP.classifier, mfGP.regressor))),
-        #'MissForest': datasets.memoize(utils.impute_missforest)
+        #    use_previous_prediction=False, impute_name_replace=('MF_GMM', 'GMM')),
+        #'MissForest': datasets.memoize(utils.impute_missforest),
     }, dsets, do_not_compute=False)
     print(baseline)

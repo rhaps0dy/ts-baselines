@@ -266,8 +266,8 @@ def mf_initial_impute(log_path, df, info, n_components=15, n_init=5,
             for kk in info['cat_dummies'][k]:
                 categoric_indices.append(df_keys.index(kk))
         n_impute = 100000
-    _id = gmm_impute._gmm_impute(d, df.values, n_impute=n_impute,
-                                 sample_impute=categoric_indices)
+    _id, var_id = gmm_impute._gmm_impute(d, df.values, n_impute=n_impute,
+                                         sample_impute=categoric_indices)
     if not ignore_categories:
         for k in cat_keys:
             # Monte-Carlo integral of softmax
@@ -286,9 +286,9 @@ def mf_initial_impute(log_path, df, info, n_components=15, n_init=5,
 
     imputed_data = np.mean(_id, axis=0)
     imputed_df = datasets.dataframe_like(df, imputed_data)
+    variance_df = datasets.dataframe_like(df, var_id)
 
-    return imputed_df, imputed_df.applymap(
-        lambda x: 1.0 if np.isnan(x) else 0.0), d
+    return imputed_df, variance_df, d
 
 
 if __name__ == 'OLD__main__':
