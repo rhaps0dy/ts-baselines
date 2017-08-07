@@ -82,9 +82,9 @@ def benchmark(impute_methods, datasets, do_not_compute=False,
     del b, c, d, e
 
     np.random.shuffle(tests_to_perform)
-    # tests_to_perform = [(("Soybean", datasets["Soybean"]),
-    #                      (memoize(utils.mcar_total), 'MCAR_total'),
-    #                      .1, 'mean_std')]
+    #tests_to_perform = [(("Ionosphere", datasets["Ionosphere"]),
+    #                     (memoize(utils.mcar_rows), 'MCAR_rows'),
+    #                     .3, 'mean_std')]
 
     for ((data_name, (full_data, cat_keys)), (ampute_fun, ampute_fun_name),
          proportion, norm_type) in tests_to_perform:
@@ -110,6 +110,9 @@ def benchmark(impute_methods, datasets, do_not_compute=False,
                         path, 'imputed_{:s}_{:s}/checkpoint'.format(
                             algo_name, amputed_name)))
                     and not os.path.exists(os.path.join(
+                        path, 'imputed_{:s}_{:s}/mf_out.pkl.gz'.format(
+                            algo_name, amputed_name)))
+                    and not os.path.exists(os.path.join(
                         path, 'imputed_{:s}_{:s}/params.pkl.gz'.format(
                             algo_name, amputed_name)))):
                 table['RMSE'][algo_name][norm_type][data_name]\
@@ -130,9 +133,13 @@ def benchmark(impute_methods, datasets, do_not_compute=False,
             imputed_data = utils.unnormalise_dataframes(moments, _id)
             d = utils.reconstruction_metrics(amputed_data, full_data,
                                              imputed_data)
+            if not do_not_compute:
+                print("JUST GOT SOME RESULTS FOR:", algo_name)
             for k, v in d.items():
                 table[k][algo_name][norm_type][data_name]\
                     [ampute_fun_name][str(proportion)] = v
+                if not do_not_compute:
+                    print(k, v)
 
 
     def get_multiindex(d, levels=3):
@@ -165,7 +172,7 @@ def benchmark(impute_methods, datasets, do_not_compute=False,
                         index=[np.array(a) for a in rows],
                         columns=[np.array(a) for a in cols])
 if __name__ == '__main__':
-    dsets = datasets()
+    dsets = {"BostonHousing": datasets()["BostonHousing"]}
     baseline = benchmark({
         'MissForest': memoize(utils.impute_missforest),
     }, dsets, do_not_compute=False)

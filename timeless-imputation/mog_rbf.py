@@ -4,6 +4,7 @@ import unittest
 from GPy.kern.src.kern import Kern
 from GPy.core.parameterization import Param
 from paramz.caching import Cache_this
+import time
 
 def tp(x):
     return np.swapaxes(x, -1, -2)
@@ -12,6 +13,12 @@ def uncertain_point(inp, mog, cutoff, M, expand_dims=False,
                     single_gaussian_moment_matching=False):
     mis = np.isnan(inp)
     d = gmm.conditional_mog(mog, inp, mis, cutoff=cutoff)
+    return with_d_uncertain_point(d, inp, mis, M, expand_dims,
+                            single_gaussian_moment_matching)
+
+
+def with_d_uncertain_point(d, inp, mis, M, expand_dims=False,
+                     single_gaussian_moment_matching=False):
     if single_gaussian_moment_matching:
     # https://stats.stackexchange.com/questions/16608/what-is-the-variance-of-the-weighted-mixture-of-two-gaussians
         ms = d['means'] * d['weights'][:, np.newaxis]
@@ -23,7 +30,8 @@ def uncertain_point(inp, mog, cutoff, M, expand_dims=False,
         d['covariances'] = np.diag(var_mix)[np.newaxis, :, :]
 
     d['mis'] = mis
-    d['mu_obs'] = inp[~mis][np.newaxis, :, np.newaxis]
+    obs = ~mis
+    d['mu_obs'] = inp[obs][np.newaxis, :, np.newaxis]
     p = np.linalg.inv(d['covariances'])
     d['precisions'] = p
 
@@ -33,63 +41,60 @@ def uncertain_point(inp, mog, cutoff, M, expand_dims=False,
 
     A = d['precisions'] + M[d['mis'], :][:, d['mis']]
     d['Ainv'] = np.linalg.inv(A)
-    d['sqrt_det'] = (np.linalg.det(d['covariances'])
-                    * np.linalg.det(A))**(-.5)
-    d['neg_Ainv_a'] = d['Ainv'] @ d['sig_mu']
-    d['a_Ainv_a'] = tp(d['sig_mu']) @ d['neg_Ainv_a']
+    sqrt_det = (np.linalg.det(d['covariances'])
+                * np.linalg.det(A))**(-.5)
+    d['norm'] = d['weights'] * sqrt_det
+    neg_Ainv_a = d['Ainv'] @ d['sig_mu']
+    a_Ainv_a = tp(d['sig_mu']) @ neg_Ainv_a
+
+    obs_sc = tp(d['mu_obs']) @ M[obs, :][:, obs] @ d['mu_obs']
+    d['sum_contrib'] = d['mu_sig_mu'] - a_Ainv_a + obs_sc
+    d['b'] = M[:, mis] @ neg_Ainv_a + M[:, obs] @ d['mu_obs']
+    d['B_2'] = -(M - M[:, mis] @ d['Ainv'] @ M[mis, :])
     return d
 
 
 def rbf_uncertain(x, v, M_):
     M = M_[np.newaxis, np.newaxis, :, :]
-    misx = x['mis']
     misv = v['mis']
-    obsx = ~misx
     obsv = ~misv
 
-    x_mu_obs = x['mu_obs'][:, np.newaxis]
     v_mu_obs = v['mu_obs'][np.newaxis, :]
-    Ainv = x['Ainv'][:, np.newaxis]
-    Cinv = v['Ainv'][np.newaxis, :]
-    a_Ainv_a = x['a_Ainv_a'][:, np.newaxis]
-    neg_Ainv_a = x['neg_Ainv_a'][:, np.newaxis]
-    x_sig_mu = x['sig_mu'][:, np.newaxis]
     v_sig_mu = v['sig_mu'][np.newaxis, :]
-    x_mu_sig_mu = x['mu_sig_mu'][:, np.newaxis]
+    Cinv = v['Ainv'][np.newaxis, :]
+
+    b = x['b'][:, np.newaxis]
+    B_2 = x['B_2'][:, np.newaxis]
+    x_sum_contrib = x['sum_contrib'][:, np.newaxis]
     v_mu_sig_mu = v['mu_sig_mu'][np.newaxis, :]
 
-    ww = (x['weights'][:, np.newaxis]
-          * v['weights'][np.newaxis, :]
-          * x['sqrt_det'][:, np.newaxis]
-          * v['sqrt_det'][np.newaxis, :])
+    ww = (x['norm'][:, np.newaxis]
+          * v['norm'][np.newaxis, :])
 
-    exp = x_mu_sig_mu + v_mu_sig_mu - a_Ainv_a
-    exp += tp(x_mu_obs) @ M[:, :, obsx, :][:, :, :, obsx] @ x_mu_obs
-
-    b = M[:, :, :, misx] @ neg_Ainv_a + M[:, :, :, obsx] @ x_mu_obs
-    B_2 = -(M - M[:, :, :, misx] @ Ainv @ M[:, :, misx, :])
     d = B_2[:, :, :, obsv] @ v_mu_obs
     c = v_sig_mu + b[:, :, misv] + d[:, :, misv]
-
-    exp -= tp(c) @ Cinv @ c
-    exp -= tp(2*b + d)[:, :, :, obsv] @ v_mu_obs
+    a = tp(c) @ Cinv @ c
+    d = tp(2*b + d)[:, :, :, obsv] @ v_mu_obs
+    exp = x_sum_contrib + v_mu_sig_mu - a - d
 
     exp = np.squeeze(exp, (-2, -1))
     assert exp.shape == ww.shape
 
     return np.sum(ww * np.exp(-.5*exp))
 
-
-class UncertainMogRBFWhite(Kern):
+class UncertainMoGRBFWhite(Kern):
     def __init__(self, input_dim, mog, white_var=1., rbf_var=1.,
                  lengthscale=1., ARD=False, cutoff=0.99, single_gaussian=False,
-                 active_dims=None, name='uncertainMoG'):
+                 active_dims=None, name='uncertainMoG', X_train=None, X_test=None):
         """For this kernel, to save computation, we are going to assume the
         dimension 0 of the inputs bears an ID of the point. Thus, X.shape[1] ==
         input_dim + 1.
         `cutoff` represents the % of the variance that the MoG must represent
-        before it is cut off."""
-        super(UncertainMogRBFWhite, self).__init__(input_dim, active_dims, name)
+        before it is cut off.
+        X_train and X_test are pre-computed lists of MoG per point. If a
+        dimension of .K matches one of their lengths, they get re-used.
+        """
+        super(UncertainMoGRBFWhite, self).__init__(input_dim, active_dims, name)
         self.input_dim = input_dim
         self.mog = mog
         self.single_gaussian = single_gaussian
@@ -114,10 +119,13 @@ class UncertainMogRBFWhite(Kern):
 
     @Cache_this(limit=3, ignore_args=())
     def K(self, X, X2=None):
+        start = time.time()
         X = list(map(lambda inp: uncertain_point(
             inp, self.mog, self.cutoff, self.M,
             single_gaussian_moment_matching=self.single_gaussian), X))
+        print("To compute map took me:", time.time() - start)
 
+        start = time.time()
         if X2 is None:
             out = np.zeros([len(X), len(X)])
             for i, x in enumerate(X):
@@ -125,6 +133,7 @@ class UncertainMogRBFWhite(Kern):
                     out[i, j] = rbf_uncertain(x, X[j], self.M)
             out += out.T
             out *= self.rbf_var
+            out = (out + out.T) / 2
             out.flat[::len(X)+1] = self.rbf_var + self.white_var
         else:
             X2 = list(map(lambda inp: uncertain_point(
@@ -135,6 +144,7 @@ class UncertainMogRBFWhite(Kern):
                 for j, x2 in enumerate(X2):
                     out[i, j] = rbf_uncertain(x, x2, self.M)
             out *= self.rbf_var
+        print("To compute matrix took me:", time.time() - start)
         return out
 
     def Kdiag(self, X):
@@ -142,6 +152,138 @@ class UncertainMogRBFWhite(Kern):
 
     def update_gradients_full(self, dL_dK, X, X2):
         pass
+
+
+class UncertainGaussianRBFWhite(UncertainMoGRBFWhite):
+    def __init__(self, input_dim, mog, white_var=1., rbf_var=1.,
+                 lengthscale=1., ARD=False, active_dims=None,
+                 name='uncertainMoG', X_train=None, X_test=None):
+        """
+        Same as UncertainMoGRBFWhite but with a single Gaussian.
+        """
+        self.input_dim = input_dim
+        self.mog = mog
+        if self.mog is None:
+            # The input will be the means and the independent covariances
+            self.input_dim *= 2
+            assert active_dims is None
+        Kern.__init__(self, self.input_dim, active_dims, name)
+
+        self.white_var = Param('white_var', white_var)
+        self.rbf_var = Param('rbf_var', rbf_var)
+        self.lengthscale = Param('lengthscale', lengthscale)
+        assert len(self.lengthscale.shape) == 1, \
+                "Lengthscale must be of rank 1"
+        assert (self.lengthscale.shape[0] == 1 or
+                self.lengthscale.shape[0] == self.input_dim), \
+                "The lengthscale must be a single number or a diagonal"
+        self.link_parameters(self.white_var, self.rbf_var, self.lengthscale)
+
+        self.M = np.zeros([input_dim, input_dim])
+        self.parameters_changed()
+
+    @staticmethod
+    def gather_point_stacks(points):
+        n_dims = len(points[0]['mis'])
+        n_mixtures = len(points[0]['means'])
+        assert n_mixtures == 1, "No point doing this with more mixtures"
+        n_points = len(points)
+
+        b = np.concatenate(list(map(lambda p: p['b'], points)), axis=0)
+        assert b.shape == (n_points, n_dims, 1)
+
+        B_2 = np.concatenate(list(map(lambda p: p['B_2'], points)), axis=0)
+        assert B_2.shape == (n_points, n_dims, n_dims)
+
+        norm = np.concatenate(list(map(lambda p: p['norm'], points)), axis=0)
+        assert norm.shape == (n_points,)
+
+        sum_contrib = np.concatenate(list(map(lambda p: p['sum_contrib'], points)),
+                                     axis=0)
+        assert sum_contrib.shape == (n_points, 1, 1)
+
+        mu_sig_mu = np.concatenate(list(map(lambda p: p['mu_sig_mu'], points)),
+                                   axis=0)
+        assert mu_sig_mu.shape == (n_points, 1, 1)
+
+        sig_mu = np.zeros_like(b)
+        mu_obs = np.zeros_like(b)
+        Cinv = np.zeros_like(B_2)
+
+        for i, p in enumerate(points):
+            mis = p['mis']
+            sig_mu[i, mis, :] = p['sig_mu']
+            mu_obs[i, ~mis, :] = p['mu_obs']
+            Cinv[i, mis[:, np.newaxis]*mis] = p['Ainv'].reshape(n_mixtures, -1)
+
+        return b, B_2, norm, sum_contrib, mu_sig_mu, sig_mu, mu_obs, Cinv
+
+    def points_statistics(self, X):
+        if self.mog is None:
+            X_var = X[:, X.shape[1]//2:]
+            X = X[:, :X_var.shape[1]]
+            mis = X_var != 0.
+
+            X_points = []
+            weights = np.ones([1], dtype=X.dtype)
+            for i in range(len(X)):
+                d = {'weights': weights,
+                     'means': X[i:i+1, mis],
+                     'covariances': np.diag(X_var[i:i+1, mis])}
+                X_points.append(with_d_uncertain_point(
+                    d, X[i:i+1], mis, self.M))
+        else:
+            X_points = list(map(lambda inp: uncertain_point(inp, self.mog,
+                1., self.M, single_gaussian_moment_matching=True), X))
+        return self.gather_point_stacks(X_points)
+
+    @Cache_this(limit=3, ignore_args=())
+    def K(self, X, X2=None):
+        start = time.time()
+        b, B_2, norm, sum_contrib, mu_sig_mu, sig_mu, mu_obs, Cinv = \
+            self.points_statistics(X)
+
+        b = b[:, np.newaxis]
+        B_2 = B_2[:, np.newaxis]
+        x_norm = norm[:, np.newaxis]
+        x_sum_contrib = sum_contrib[:, np.newaxis]
+
+        if X2 is None:
+            print("To compute map took me:", time.time() - start)
+            start = time.time()
+            v_sig_mu = sig_mu[np.newaxis, :]
+            v_mu_sig_mu = mu_sig_mu[np.newaxis, :]
+            v_mu_obs = mu_obs[np.newaxis, :]
+            Cinv = Cinv[np.newaxis, :]
+            v_norm = norm[np.newaxis, :]
+        else:
+            del norm, sum_contrib, mu_sig_mu, sig_mu, mu_obs, Cinv
+            _, _, v_norm, _, v_mu_sig_mu, v_sig_mu, v_mu_obs, Cinv = \
+                self.points_statistics(X2)
+            print("To compute map (rectangular) took me:", time.time() - start)
+            start = time.time()
+            v_sig_mu = v_sig_mu[np.newaxis, :]
+            v_mu_sig_mu = v_mu_sig_mu[np.newaxis, :]
+            v_mu_obs = v_mu_obs[np.newaxis, :]
+            Cinv = Cinv[np.newaxis, :]
+            v_norm = v_norm[np.newaxis, :]
+
+        d = B_2 @ v_mu_obs
+        sum_bd = b + d
+        c = v_sig_mu + sum_bd
+        a = tp(c) @ Cinv @ c
+        d = tp(sum_bd + b) @ v_mu_obs
+        exp = x_sum_contrib + v_mu_sig_mu - a - d
+        out = v_norm * x_norm * np.exp(-.5*np.squeeze(exp, (-2, -1)))
+
+        out *= self.rbf_var
+        if X2 is None:
+            out = (out + out.T) / 2
+            out.flat[::len(X)+1] = self.rbf_var + self.white_var
+        print("To compute matrix took me:", time.time() - start)
+        print(out.shape)
+        assert out.shape == (len(X), len(X) if X2 is None else len(X2))
+        return out
 
 
 if __name__ == '__main__':
@@ -165,11 +307,9 @@ if __name__ == '__main__':
                 "params.pkl.gz")
     assert len(test_df.values[0].shape) == 1
 
-    M = np.ones(test_df.shape[1]) / 1000
-    x = uncertain_point(m, test_df.values[0], M)
-    x['id'] = 0
-    v = uncertain_point(m, test_df.values[1], M)
-    v['id'] = 1
+    M = np.eye(test_df.shape[1]) / 1000
+    x = uncertain_point(test_df.values[0], m, 0.99, M)
+    v = uncertain_point(test_df.values[1], m, 0.99, M)
 
     print(rbf_uncertain(x, v, M))
     print(rbf_uncertain(v, x, M))

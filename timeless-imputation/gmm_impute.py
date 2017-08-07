@@ -65,9 +65,12 @@ def conditional_mog(m, inp, mask, cutoff=1.0):
                 'covariances': m['covariances'],
                 'weights': m['weights']}
     if np.all(~mask):
-        return {'means': np.zeros([1, 0], dtype=inp.dtype),
-                'covariances': np.zeros([1, 0, 0], dtype=inp.dtype),
-                'weights': np.ones([1], dtype=inp.dtype)}
+        n_gaussians = 1
+        ws = np.zeros([n_gaussians], dtype=inp.dtype)
+        ws[0] = 1
+        return {'means': np.zeros([n_gaussians, 0], dtype=inp.dtype),
+                'covariances': np.zeros([n_gaussians, 0, 0], dtype=inp.dtype),
+                'weights': ws}
     # return {'means': np.zeros([1, np.sum(mask)], dtype=inp.dtype),
     #         'covariances': np.eye(np.sum(mask))[np.newaxis, :, :],
     #         'weights': np.ones([1], dtype=inp.dtype)}
@@ -116,7 +119,7 @@ def conditional_mog(m, inp, mask, cutoff=1.0):
         'weights': weights}
 
 
-def _gmm_impute(m, inputs, n_impute=100000, sample_impute=False):
+def _gmm_impute(m, inputs, n_impute, sample_impute=False):
     "Impute inputs using Gaussian Mixture Model m"
     if sample_impute:
         outputs = np.stack([inputs] * n_impute, axis=0)
