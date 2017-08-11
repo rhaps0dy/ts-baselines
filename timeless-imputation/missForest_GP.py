@@ -3,29 +3,60 @@ import pandas as pd
 import tensorflow as tf
 import GPy
 import mog_rbf
+import knn_kernel
 
 
 class GPRegression:
-    def __init__(self, n_features, mog, ARD=False):
-        print("Your variety of GP is:", self.__class__)
+    def __init__(self, n_features, mog, complete_X, ARD=True):
         self.ARD = ARD
         self.mog = mog
+        self.complete_X = complete_X
 
     def make_kernel(self, X):
         n_features = X.shape[1]
-        kern = GPy.kern.RBF(n_features, ARD=self.ARD) + GPy.kern.White(n_features)
+        kern = GPy.kern.Matern32(n_features, ARD=self.ARD) + GPy.kern.White(n_features)
         return kern
 
-    def fit(self, X, X_var, y, max_iters=1000, num_inducing=300, optimize=True):
+    def fit(self, X, X_var, y, max_iters=1000, optimize=True):
         kern = self.make_kernel(X)
         n_features = X.shape[1]
         y = y.values[:, np.newaxis]
         self.m = GPy.models.GPRegression(X=X.values, Y=y, kernel=kern)
         if optimize:
-            print(self.m.optimize('bfgs', max_iters=max_iters))
+            self.m.optimize('bfgs', max_iters=max_iters)
 
     def predict(self, X, X_var):
         return self.m.predict(X.values)
+
+class KNNKernelMixin:
+    def make_kernel(self, X):
+        if np.any(np.isnan(X)):
+            return knn_kernel.RBFWhiteKNNCheating(self.complete_X.values,
+                                                n_neighbours=5, ARD=self.ARD)
+        else:
+            return knn_kernel.RBFWhiteKNNCheating(self.complete_X.values,
+                                                n_neighbours=1, ARD=self.ARD)
+
+    def fit(self, X, X_var, y, max_iters=1000, optimize=True):
+        kern = self.make_kernel(X)
+        y = y.values[:, np.newaxis]
+        X = X.values
+        missing_rows = np.all(np.isnan(X), axis=1)
+        self.m = GPy.models.GPRegression(X=X[~missing_rows],
+                                         Y=y[~missing_rows], kernel=kern)
+        if optimize:
+            self.m.optimize('bfgs', max_iters=max_iters)
+
+    def predict(self, X, X_var):
+        missing_rows = np.all(np.isnan(X.values), axis=1)
+        mean, var = self.m.predict(X.values)
+        # Return the prior for missing rows
+        mean[missing_rows] = 0.
+        var[missing_rows] = 1.
+        return mean, var
+
+class KNNGPRegression(KNNKernelMixin, GPRegression):
+    pass
 
 class VariationalGPRegression(GPRegression):
     def fit(self, X, X_var, y, max_iters=1000, optimize=False):
@@ -36,7 +67,7 @@ class VariationalGPRegression(GPRegression):
                                                Z=X.values,
                                                X_variance=X_var.values)
         if optimize:
-            print(self.m.optimize('bfgs', max_iters=max_iters))
+            self.m.optimize('bfgs', max_iters=max_iters)
 
 class UncertainGPRegression(GPRegression):
     Model = GPy.models.GPRegression
@@ -64,9 +95,8 @@ class UncertainGPClassification(UncertainGPRegression):
     def predict_proba(self, X, X_var):
         return self.predict(X, X_var)
 
-
 class GPClassification(GPRegression):
-    def fit(self, X, X_var, y, max_iters=1000, num_inducing=300, optimize=True):
+    def fit(self, X, X_var, y, max_iters=1000, optimize=True):
         kern = self.make_kernel(X)
         y = y.values[:, np.newaxis]
         n_classes = y.max()+1
@@ -82,13 +112,17 @@ class GPClassification(GPRegression):
 
         self.m = C(X=X.values, Y=y, kernel=kern)
         if optimize:
-            print(self.m.optimize('bfgs', max_iters=max_iters))
+            self.m.optimize('bfgs', max_iters=max_iters)
 
     def predict(self, X, X_var):
         raise NotImplementedError
 
     def predict_proba(self, X, X_var):
         return self.m.predict(X.values)
+
+class KNNGPClassification(KNNKernelMixin, GPClassification):
+    pass
+
 
 class VariationalGPClassification(GPClassification):
     def fit(self, X, X_var, y, max_iters=1000, optimize=False):
@@ -103,7 +137,7 @@ class VariationalGPClassification(GPClassification):
         self.m = C(X=X.values, Y=y, kernel=kern, Z=X.values,
                    X_variance=X_var.values)
         if optimize:
-            print(self.m.optimize('bfgs', max_iters=max_iters))
+            self.m.optimize('bfgs', max_iters=max_iters)
 
 if __name__ == '__main__':
     import missForest
@@ -111,7 +145,7 @@ if __name__ == '__main__':
     import missing_bayesian_mixture as mbm
 
     _ds = datasets.datasets()
-    dsets = dict((x, _ds[x]) for x in ["BostonHousing" # "Ionosphere", "BostonHousing",
+    dsets = dict((x, _ds[x]) for x in ["BostonHousing", "Ionosphere", # "Servo",
         # "Soybean", "BreastCancer", "Servo", "Ionosphere"
     ])
     baseline = datasets.benchmark({
@@ -120,26 +154,41 @@ if __name__ == '__main__':
         #    predictors=(lambda *args: GPClassification(*args, ARD=True),
         #                lambda *args: GPRegression(*args, ARD=True)),
         #    use_previous_prediction=False),
-        #'GP': lambda log_path, d, full_data: missForest.impute(
+        #'GP_fulldata': lambda log_path, d, full_data: missForest.impute(
         #    log_path, d, full_data, sequential=False, print_progress=True,
         #    predictors=(GPClassification, GPRegression),
+        #    use_previous_prediction=False),
+        #'GP_residual': lambda log_path, d, full_data: missForest.impute(
+        #    log_path, d, full_data, sequential=False, print_progress=True,
+        #    predictors=(GPClassification, GPRegression),
+        #    impute_name_replace=('GP_residual', 'GMM'),
+        #    initial_impute=mbm.mf_initial_impute,
+        #    use_previous_prediction=True),
+        'GP_KNN_meanimp': lambda log_path, d, full_data: missForest.impute(
+            log_path, d, full_data, sequential=False, print_progress=True,
+            predictors=(KNNGPClassification, KNNGPRegression),
+            optimize_gp=True, use_previous_prediction=False),
+        #'MissForest_fulldata': datasets.memoize(utils.impute_missforest),
+        #'MF_py_fulldata': lambda log, d, full_data: missForest.impute(
+        #    log, d, full_data, sequential=False, print_progress=True,
         #    use_previous_prediction=False),
         #'GP_unopt': lambda log_path, d, full_data: missForest.impute(
         #    log_path, d, full_data, sequential=False, print_progress=True,
         #    predictors=(GPClassification, GPRegression),
         #    use_previous_prediction=False, optimize_gp=False),
-        'GP_kern_mog': lambda log_path, d, full_data: missForest.impute(
-            log_path, d, full_data, sequential=False, print_progress=True,
-            predictors=(UncertainGPClassification, UncertainGPRegression),
-            impute_name_replace=('GP_kern_mog', 'GMM'),
-            initial_impute=mbm.mf_initial_impute,
-            use_previous_prediction=False, optimize_gp=False),
-        'GP_kern_uncertain': lambda log_path, d, full_data: missForest.impute(
-            log_path, d, full_data, sequential=False, print_progress=True,
-            predictors=(UncertainGPClassification, UncertainGPRegression),
-            use_previous_prediction=False, optimize_gp=False),
+        #'GP_kern_mog': lambda log_path, d, full_data: missForest.impute(
+        #    log_path, d, full_data, sequential=False, print_progress=True,
+        #    predictors=(UncertainGPClassification, UncertainGPRegression),
+        #    impute_name_replace=('GP_kern_mog', 'GMM'),
+        #    initial_impute=mbm.mf_initial_impute,
+        #    use_previous_prediction=False, optimize_gp=False),
+        #'GP_kern_uncertain': lambda log_path, d, full_data: missForest.impute(
+        #    log_path, d, full_data, sequential=False, print_progress=True,
+        #    predictors=(UncertainGPClassification, UncertainGPRegression),
+        #    use_previous_prediction=False, optimize_gp=False),
         #'GP_uncertain': lambda log_path, d, full_data: missForest.impute(
         #    log_path, d, full_data, sequential=False, print_progress=True,
         #    predictors=(VariationalGPClassification, VariationalGPRegression),
         #    use_previous_prediction=False, optimize_gp=False),
     }, dsets, do_not_compute=False)
+    print(baseline)
