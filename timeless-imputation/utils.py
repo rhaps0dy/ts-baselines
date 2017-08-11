@@ -201,8 +201,8 @@ def impute_mice(dataset, number_imputations=5, method='pmm', full_data=None):
     "Imputed dataset using MICE"
     del full_data
     df_to_R(dataset, "df")
-    R("imputed_df <- mice(df, m={:d}, maxit=100, method='{:s}', seed={:d})"
-      .format(number_imputations, method, 500))
+    R("imputed_df <- mice(df, m={:d}, maxit=100, method='{:s}')"
+      .format(number_imputations, method))
     dfs = []
     for i in range(1, number_imputations + 1):
         R("idf <- complete(imputed_df, {:d})".format(i))
