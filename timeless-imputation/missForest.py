@@ -45,7 +45,7 @@ class RF_reg(RandomForestRegressor):
 def predict(df, df_var, other_info, dense_df, prev_df, complete_df, train_mask,
             key, cat_dummies, classifier, regressor,
             use_previous_prediction=False, optimize=True, n_neighbours=None,
-            knn_type=None):
+            knn_type=None, model_fname=None, **kwargs):
     #if not use_previous_prediction:
     #    del prev_df  # To prevent bugs
 
@@ -93,8 +93,13 @@ def predict(df, df_var, other_info, dense_df, prev_df, complete_df, train_mask,
         mog = None
 
     rf = method(X.shape[1], mog=mog, complete_X=X, n_neighbours=n_neighbours,
-            knn_type=knn_type)
+                knn_type=knn_type, **kwargs)
     rf.fit(X[train_mask], X_var[train_mask], y[train_mask], optimize=optimize)
+    if hasattr(rf, "m"):
+        pu.dump({"rbf_variance": rf.m.kern.rbf.variance,
+                 "white_variance": rf.m.kern.white.variance,
+                 "rbf_lengthscales": rf.m.kern.rbf.lengthscales},
+                model_fname)
 
     if key in cat_dummies:
         n_cats = y.max() + 1
@@ -188,7 +193,7 @@ def impute(log_path, dataset, full_data, sequential=True,
            predictors=(RF_class, RF_reg), initial_impute=mean_impute,
            ignore_ordered=True, print_progress=True, max_iterations=25,
            use_previous_prediction=False, impute_name_replace=None,
-           optimize_gp=True, n_neighbours=5, knn_type='kernel_avg'):
+           optimize_gp=True, n_neighbours=5, knn_type='kernel_avg', **kwargs):
     if not os.path.exists(log_path):
         os.mkdir(log_path)
     memoized_fname = os.path.join(log_path, "mf_out.pkl.gz")
@@ -241,7 +246,11 @@ def impute(log_path, dataset, full_data, sequential=True,
                         regressor=predictors[1],
                         use_previous_prediction=use_previous_prediction,
                         optimize=optimize_gp, n_neighbours=n_neighbours,
-                        knn_type=knn_type)
+                        knn_type=knn_type,
+                        model_fname=os.path.join(
+                            log_path, 'model_{:s}_iter_{:d}.pkl.gz'.format(
+                                key, iter_i)
+                        ), **kwargs)
             print("model_RMSE:", utils.rmse([True]*np.sum(~mask),
                                          full_data[0].loc[~mask, key].values,
                                          [(y[0] if isinstance(y, tuple) else y)

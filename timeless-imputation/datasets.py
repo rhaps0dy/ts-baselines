@@ -60,7 +60,7 @@ def memoize(f):
     return memoized_f
 
 
-def benchmark(impute_methods, datasets, do_not_compute=False,
+def benchmark(impute_methods, datasets, tests_to_perform, do_not_compute=False,
               path="impute_benchmark"):
     if not os.path.exists(path):
         os.mkdir(path)
@@ -68,23 +68,6 @@ def benchmark(impute_methods, datasets, do_not_compute=False,
     def recursive_defaultdict():
         return collections.defaultdict(recursive_defaultdict, {})
     table = recursive_defaultdict()
-
-    def do_mcar_rows(dataset_, proportion):
-        return utils.mcar_rows(dataset_, proportion**.5, proportion**.5)
-
-    tests_to_perform = []
-    for b in datasets.items():
-        for c in [(memoize(utils.mcar_total), 'MCAR_total'),
-                    (memoize(do_mcar_rows), 'MCAR_rows')]:
-            for d in [.1, .3, .5, .7, .9]:
-                for e in ['mean_std']:
-                    tests_to_perform.append((b, c, d, e))
-    del b, c, d, e
-
-    np.random.shuffle(tests_to_perform)
-    #tests_to_perform = [(("Ionosphere", datasets["Ionosphere"]),
-    #                     (memoize(utils.mcar_rows), 'MCAR_rows'),
-    #                     .3, 'mean_std')]
 
     for ((data_name, (full_data, cat_keys)), (ampute_fun, ampute_fun_name),
          proportion, norm_type) in tests_to_perform:
@@ -171,9 +154,3 @@ def benchmark(impute_methods, datasets, do_not_compute=False,
     return pd.DataFrame(data,
                         index=[np.array(a) for a in rows],
                         columns=[np.array(a) for a in cols])
-if __name__ == '__main__':
-    dsets = {"BostonHousing": datasets()["BostonHousing"]}
-    baseline = benchmark({
-        'MissForest': memoize(utils.impute_missforest),
-    }, dsets, do_not_compute=False)
-    print(baseline)
