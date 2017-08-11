@@ -7,10 +7,13 @@ import knn_kernel
 
 
 class GPRegression:
-    def __init__(self, n_features, mog, complete_X, ARD=True):
+    def __init__(self, n_features, mog, complete_X, n_neighbours, knn_type,
+                 ARD=True):
         self.ARD = ARD
         self.mog = mog
-        self.complete_X = complete_X
+        self.complete_X = complete_X[~np.all(np.isnan(complete_X), axis=1)]
+        self.n_neighbours = n_neighbours
+        self.knn_type = knn_type
 
     def make_kernel(self, X):
         n_features = X.shape[1]
@@ -32,7 +35,9 @@ class KNNKernelMixin:
     def make_kernel(self, X):
         if np.any(np.isnan(X)):
             return knn_kernel.RBFWhiteKNNCheating(self.complete_X.values,
-                                                n_neighbours=5, ARD=self.ARD)
+                                                  n_neighbours=self.n_neighbours,
+                                                  knn_type=self.knn_type,
+                                                  ARD=self.ARD)
         else:
             return knn_kernel.RBFWhiteKNNCheating(self.complete_X.values,
                                                 n_neighbours=1, ARD=self.ARD)
@@ -148,47 +153,43 @@ if __name__ == '__main__':
     dsets = dict((x, _ds[x]) for x in ["BostonHousing", "Ionosphere", # "Servo",
         # "Soybean", "BreastCancer", "Servo", "Ionosphere"
     ])
-    baseline = datasets.benchmark({
-        #'GP_ARD': lambda log_path, d, full_data: missForest.impute(
-        #    log_path, d, full_data, sequential=False, print_progress=True,
-        #    predictors=(lambda *args: GPClassification(*args, ARD=True),
-        #                lambda *args: GPRegression(*args, ARD=True)),
-        #    use_previous_prediction=False),
-        #'GP_fulldata': lambda log_path, d, full_data: missForest.impute(
-        #    log_path, d, full_data, sequential=False, print_progress=True,
-        #    predictors=(GPClassification, GPRegression),
-        #    use_previous_prediction=False),
-        #'GP_residual': lambda log_path, d, full_data: missForest.impute(
-        #    log_path, d, full_data, sequential=False, print_progress=True,
-        #    predictors=(GPClassification, GPRegression),
-        #    impute_name_replace=('GP_residual', 'GMM'),
-        #    initial_impute=mbm.mf_initial_impute,
-        #    use_previous_prediction=True),
-        'GP_KNN_meanimp': lambda log_path, d, full_data: missForest.impute(
-            log_path, d, full_data, sequential=False, print_progress=True,
-            predictors=(KNNGPClassification, KNNGPRegression),
-            optimize_gp=True, use_previous_prediction=False),
-        #'MissForest_fulldata': datasets.memoize(utils.impute_missforest),
-        #'MF_py_fulldata': lambda log, d, full_data: missForest.impute(
-        #    log, d, full_data, sequential=False, print_progress=True,
-        #    use_previous_prediction=False),
-        #'GP_unopt': lambda log_path, d, full_data: missForest.impute(
-        #    log_path, d, full_data, sequential=False, print_progress=True,
-        #    predictors=(GPClassification, GPRegression),
-        #    use_previous_prediction=False, optimize_gp=False),
-        #'GP_kern_mog': lambda log_path, d, full_data: missForest.impute(
-        #    log_path, d, full_data, sequential=False, print_progress=True,
-        #    predictors=(UncertainGPClassification, UncertainGPRegression),
-        #    impute_name_replace=('GP_kern_mog', 'GMM'),
-        #    initial_impute=mbm.mf_initial_impute,
-        #    use_previous_prediction=False, optimize_gp=False),
-        #'GP_kern_uncertain': lambda log_path, d, full_data: missForest.impute(
-        #    log_path, d, full_data, sequential=False, print_progress=True,
-        #    predictors=(UncertainGPClassification, UncertainGPRegression),
-        #    use_previous_prediction=False, optimize_gp=False),
-        #'GP_uncertain': lambda log_path, d, full_data: missForest.impute(
-        #    log_path, d, full_data, sequential=False, print_progress=True,
-        #    predictors=(VariationalGPClassification, VariationalGPRegression),
-        #    use_previous_prediction=False, optimize_gp=False),
-    }, dsets, do_not_compute=False)
-    print(baseline)
+    for i in range(10):
+        baseline = datasets.benchmark({
+            ('GP_KNN_meanimp_7_iter{:02d}'
+             .format(i)): lambda log_path, d, full_data: missForest.impute(
+                log_path, d, full_data, sequential=False, print_progress=True,
+                predictors=(KNNGPClassification, KNNGPRegression),
+                optimize_gp=True, use_previous_prediction=False,
+                 max_iterations=1, n_neighbours=7, knn_type='mean'),
+            ('GP_KNN_kmean_7_iter{:02d}'
+             .format(i)): lambda log_path, d, full_data: missForest.impute(
+                log_path, d, full_data, sequential=False, print_progress=True,
+                predictors=(KNNGPClassification, KNNGPRegression),
+                optimize_gp=True, use_previous_prediction=False,
+                max_iterations=1, n_neighbours=7, knn_type='kernel_weighted_mean'),
+            ('GP_KNN_kernel_7_iter{:02d}'
+             .format(i)): lambda log_path, d, full_data: missForest.impute(
+                log_path, d, full_data, sequential=False, print_progress=True,
+                predictors=(KNNGPClassification, KNNGPRegression),
+                optimize_gp=True, use_previous_prediction=False,
+                max_iterations=1, n_neighbours=7, knn_type='kernel_avg'),
+            ('GP_KNN_meanimp_5_iter{:02d}'
+             .format(i)): lambda log_path, d, full_data: missForest.impute(
+                log_path, d, full_data, sequential=False, print_progress=True,
+                predictors=(KNNGPClassification, KNNGPRegression),
+                optimize_gp=True, use_previous_prediction=False,
+                max_iterations=1, n_neighbours=5, knn_type='mean'),
+            ('GP_KNN_kmean_5_iter{:02d}'
+             .format(i)): lambda log_path, d, full_data: missForest.impute(
+                log_path, d, full_data, sequential=False, print_progress=True,
+                predictors=(KNNGPClassification, KNNGPRegression),
+                optimize_gp=True, use_previous_prediction=False,
+                max_iterations=1, n_neighbours=5, knn_type='kernel_weighted_mean'),
+            ('GP_KNN_kernel_5_iter{:02d}'
+             .format(i)): lambda log_path, d, full_data: missForest.impute(
+                log_path, d, full_data, sequential=False, print_progress=True,
+                predictors=(KNNGPClassification, KNNGPRegression),
+                optimize_gp=True, use_previous_prediction=False,
+                max_iterations=1, n_neighbours=5, knn_type='kernel_avg'),
+        }, dsets, do_not_compute=False)
+        print(baseline)

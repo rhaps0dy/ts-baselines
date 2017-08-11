@@ -6,7 +6,7 @@ import time
 
 class RBFWhiteKNNCheating(GPy.kern.src.kern.CombinationKernel):
     def __init__(self, complete_dset, n_neighbours=5, white_var=1., rbf_var=1.,
-                 name='knn', **kwargs):
+                 knn_type='kernel_avg', name='knn', **kwargs):
         rbf = GPy.kern.RBF(complete_dset.shape[1], variance=rbf_var,
                            name='rbf', **kwargs)
         white = GPy.kern.White(complete_dset.shape[1], variance=white_var,
@@ -15,6 +15,9 @@ class RBFWhiteKNNCheating(GPy.kern.src.kern.CombinationKernel):
         self.n_neighbours = n_neighbours
         self.complete_dset = complete_dset
         self.reset_times()
+
+        assert knn_type in {'kernel_avg', 'kernel_weighted_mean', 'mean'}
+        self.knn_type = knn_type
 
     def reset_times(self):
         self.neighbours_time = 0.
@@ -38,8 +41,8 @@ class RBFWhiteKNNCheating(GPy.kern.src.kern.CombinationKernel):
         correct[np.isnan(correct)] = 0.
 
         bad_kernel_dist = np.exp(-.5 * dist * correct)
-        # Ensure the diagonal gets sorted to the end
-        bad_kernel_dist.flat[::bad_kernel_dist.shape[0]+1] = np.inf
+        # The diagonal gets sorted to the end, it has the maximum kernel
+        # distance
         neighbours_i_all = np.argsort(bad_kernel_dist, axis=-1)
         neighbours_i = neighbours_i_all[..., -1-self.n_neighbours:-1]
         self.neighbours_time += time.time() - start_time
@@ -66,9 +69,19 @@ class RBFWhiteKNNCheating(GPy.kern.src.kern.CombinationKernel):
             j += 1
             mean_nan = np.isnan(neigh_mean)
             mean_nan_rows = np.any(mean_nan, axis=(1, 2))
-        out = np.where(np.nanmean(neigh_values), neigh_mean, neigh_values)
-        # Modified to do the mean before calculating the kernel
-        return np.mean(out, axis=1, keepdims=True)
+        if self.knn_type == 'kernel_avg':
+            out = neigh_values
+        elif self.knn_type == 'kernel_weighted_mean':
+            try:
+                out = np.nanmean(
+                    bad_kernel_dist.take(neighbours_i)[:, :, np.newaxis]
+                    * neigh_values, axis=1, keepdims=True)
+            except IndexError:
+                import pdb
+                pdb.set_trace()
+        elif self.knn_type == 'mean':
+            out = np.nanmean(neigh_values, axis=1, keepdims=True)
+        return np.where(np.isnan(out), neigh_mean, out)
 
     @Cache_this(limit=3, ignore_args=())
     def neighbour_average(self, fun, X, X2=None):
@@ -119,6 +132,6 @@ class RBFWhiteKNNCheating(GPy.kern.src.kern.CombinationKernel):
             self.white.variance.gradient = 0.0
 
     def update_gradients_diag(self, dL_dKdiag, X):
-        self.rbf.lengthscale.gradient = 0.0
+        self.rbf.lengthscale.gradient[...] = 0.0
         self.white.variance.gradient = \
             self.rbf.variance.gradient = np.sum(dL_dKdiag)
