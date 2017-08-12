@@ -95,10 +95,10 @@ def predict(df, df_var, other_info, dense_df, prev_df, complete_df, train_mask,
     rf = method(X.shape[1], mog=mog, complete_X=X, n_neighbours=n_neighbours,
                 knn_type=knn_type, **kwargs)
     rf.fit(X[train_mask], X_var[train_mask], y[train_mask], optimize=optimize)
-    if hasattr(rf, "m"):
+    if hasattr(rf, "m") and hasattr(rf.m.kern, "rbf"):
         pu.dump({"rbf_variance": rf.m.kern.rbf.variance,
                  "white_variance": rf.m.kern.white.variance,
-                 "rbf_lengthscales": rf.m.kern.rbf.lengthscales},
+                 "rbf_lengthscale": rf.m.kern.rbf.lengthscale},
                 model_fname)
 
     if key in cat_dummies:
@@ -183,7 +183,12 @@ def postprocess_dataframe(df, info, reindex_categories=True):
 def mean_impute(log_path, df, info):
     """This automatically also puts the probabilities of unordered categoricals
     and it should be OK with ordered categoricals"""
-    return (df, #df.fillna(df.mean()),
+    return (df.fillna(df.mean()),
+            (df.applymap(lambda x: np.nan if np.isnan(x) else 0.0)
+             .fillna(df.std())),
+            None)
+def no_impute(log_path, df, info):
+    return (df,
             (df.applymap(lambda x: np.nan if np.isnan(x) else 0.0)
              .fillna(df.std())),
             None)
