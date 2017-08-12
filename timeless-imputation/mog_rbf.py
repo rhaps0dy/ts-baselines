@@ -1,4 +1,6 @@
-import numpy as np
+import autograd.numpy as np
+import autograd
+
 import gmm_impute as gmm
 import unittest
 from GPy.kern.src.kern import Kern
@@ -80,7 +82,7 @@ def rbf_uncertain(x, v, M_):
 
 class UncertainMoGRBFWhite(Kern):
     def __init__(self, input_dim, mog, white_var=1., rbf_var=1.,
-                 lengthscale=1., ARD=False, cutoff=0.99, single_gaussian=False,
+                 ARD=False, cutoff=0.99, single_gaussian=False,
                  active_dims=None, name='uncertainMoG'):
         """For this kernel, to save computation, we are going to assume the
         dimension 0 of the inputs bears an ID of the point. Thus, X.shape[1] ==
@@ -97,6 +99,10 @@ class UncertainMoGRBFWhite(Kern):
 
         self.white_var = Param('white_var', white_var)
         self.rbf_var = Param('rbf_var', rbf_var)
+        if ARD:
+            lengthscale = np.ones([input_dim], dtype=np.float64)
+        else:
+            lengthscale = 1.
         self.lengthscale = Param('lengthscale', lengthscale)
         assert len(self.lengthscale.shape) == 1, \
                 "Lengthscale must be of rank 1"
@@ -105,17 +111,50 @@ class UncertainMoGRBFWhite(Kern):
                 "The lengthscale must be a single number or a diagonal"
         self.link_parameters(self.white_var, self.rbf_var, self.lengthscale)
 
-        self.M = np.zeros([input_dim, input_dim])
-        self.parameters_changed()
+        self.lengthscale_gradient = autograd.grad(self.kernel_for_derivating)
 
-    def parameters_changed(self):
-        self.M.flat[::self.M.shape[-1]+1] = self.lengthscale
+    @Cache_this(limit=3, ignore_args=())
+    def kernel_for_derivating(self, lengthscale, dL_dK, X, X2):
+        """ Suitable for calling `autograd.grad`, to get the gradient with
+        respect to lengthscale """
+        if len(lengthscale) == 1:
+            M = lengthscale[0] * np.eye(self.input_dim)
+        else:
+            M = np.diag(lengthscale)
+        start = time.time()
+        X = list(map(lambda inp: uncertain_point(
+            inp, self.mog, self.cutoff, M,
+            single_gaussian_moment_matching=self.single_gaussian), X))
+        print("To compute map for gradient took me:", time.time() - start)
+
+        start = time.time()
+        if X2 is None:
+            out = sum(rbf_uncertain(X[i], X[j], M) * (dL_dK[i, j] + dL_dK[j, i])
+                      for i in range(len(X))
+                      for j in range(i+1, len(X)))
+            ret = ((2.*self.rbf_var) * out
+                   + (self.rbf_var + self.white_var) * np.trace(dL_dK))
+        else:
+            X2 = list(map(lambda inp: uncertain_point(
+                inp, self.mog, self.cutoff, M,
+                single_gaussian_moment_matching=self.single_gaussian), X2))
+            out = sum(rbf_uncertain(X[i], X2[j], M) * dL_dK[i, j]
+                      for i in range(len(X))
+                      for j in range(len(X2)))
+            ret = self.rbf_var * out
+        print("To compute matrix for gradient took me:", time.time() - start)
+        return ret
+
 
     @Cache_this(limit=3, ignore_args=())
     def K(self, X, X2=None):
+        if len(self.lengthscale) == 1:
+            M = self.lengthscale[0] * np.eye(self.input_dim)
+        else:
+            M = np.diag(self.lengthscale)
         #start = time.time()
         X = list(map(lambda inp: uncertain_point(
-            inp, self.mog, self.cutoff, self.M,
+            inp, self.mog, self.cutoff, M,
             single_gaussian_moment_matching=self.single_gaussian), X))
         #print("To compute map took me:", time.time() - start)
 
@@ -124,19 +163,19 @@ class UncertainMoGRBFWhite(Kern):
             out = np.zeros([len(X), len(X)])
             for i, x in enumerate(X):
                 for j in range(i+1, len(X)):
-                    out[i, j] = rbf_uncertain(x, X[j], self.M)
+                    out[i, j] = rbf_uncertain(x, X[j], M)
             out += out.T
             out *= self.rbf_var
             out = (out + out.T) / 2
             out.flat[::len(X)+1] = self.rbf_var + self.white_var
         else:
             X2 = list(map(lambda inp: uncertain_point(
-                inp, self.mog, self.cutoff, self.M,
+                inp, self.mog, self.cutoff, M,
                 single_gaussian_moment_matching=self.single_gaussian), X2))
             out = np.zeros([len(X), len(X2)])
             for i, x in enumerate(X):
                 for j, x2 in enumerate(X2):
-                    out[i, j] = rbf_uncertain(x, x2, self.M)
+                    out[i, j] = rbf_uncertain(x, x2, M)
             out *= self.rbf_var
         #print("To compute matrix took me:", time.time() - start)
         return out
@@ -145,7 +184,23 @@ class UncertainMoGRBFWhite(Kern):
         return (self.rbf_var + self.white_var) * np.ones(len(X))
 
     def update_gradients_full(self, dL_dK, X, X2):
-        pass
+        print("Update gradients start")
+        ker = self.K(X, X2)
+        self.rbf_var.gradient = np.sum(dL_dK * ker) / self.rbf_var
+        if X2 is None:
+            self.white_var.gradient = np.trace(dL_dK)
+        else:
+            self.white_var.gradient = 0.0
+        print("Lengthscale gradients start")
+        self.lengthscale.gradient = \
+            self.lengthscale_gradient(np.array(self.lengthscale), dL_dK, X, X2)
+        print("Update gradients end")
+
+
+    def update_gradients_diag(self, dL_dKdiag, X):
+        self.lengthscale.gradient[...] = 0.0
+        self.white_var.gradient = \
+            self.rbf_var.gradient = np.sum(dL_dKdiag)
 
 
 class UncertainGaussianRBFWhite(UncertainMoGRBFWhite):
@@ -177,6 +232,9 @@ class UncertainGaussianRBFWhite(UncertainMoGRBFWhite):
 
         self.M = np.zeros([input_dim, input_dim])
         self.parameters_changed()
+
+    def parameters_changed(self):
+        self.M.flat[::self.M.shape[-1]+1] = self.lengthscale
 
     @staticmethod
     def gather_point_stacks(points):
@@ -268,8 +326,8 @@ class UncertainGaussianRBFWhite(UncertainMoGRBFWhite):
         sum_bd = b + d
         c = v_sig_mu + sum_bd
         a = tp(c) @ Cinv @ c
-        d = tp(sum_bd + b) @ v_mu_obs
-        exp = x_sum_contrib + v_mu_sig_mu - a - d
+        e = tp(sum_bd + b) @ v_mu_obs
+        exp = x_sum_contrib + v_mu_sig_mu - a - e
         out = v_norm * x_norm * np.exp(-.5*np.squeeze(exp, (-2, -1)))
 
         out *= self.rbf_var

@@ -35,11 +35,12 @@ def tf_gaussian_pdf(diffs, right_diffs, covariances, inverse_covariances):
     left_diffs = tf.expand_dims(diffs, axis=1)
     exponent = left_diffs @ inverse_covariances @ right_diffs
 
-    exponent = -0.5 * tf.squeeze(exponent, axis=[1,2])
+    exponent = -0.5 * tf.squeeze(exponent, axis=[1, 2])
     dets = tf.matrix_determinant(covariances)
     divider = tf.pow(tf.constant(2 * np.pi, dtype=diffs.dtype),
-                     tf.cast(tf.shape(diffs)[0], dtype=diffs.dtype))
-    g_pdf = tf.exp(exponent) * tf.rsqrt(divider * dets)
+                     tf.cast(tf.shape(diffs)[1], dtype=diffs.dtype))
+    rsqrt_div = tf.rsqrt(divider * dets)
+    g_pdf = tf.exp(exponent) * rsqrt_div
     return g_pdf
 
 
