@@ -203,7 +203,7 @@ def tf_points_statistics(inputs, GMM, M, parallel_iterations=50):
 
 @add_variable_scope()
 def k_f(b, B_2, x_norm, x_sum_contrib, v_mu_sig_mu, v_sig_mu, v_mu_obs, Cinv,
-        v_norm, rbf_var):
+        v_norm):
     def make_X(t):
         assert len(t.get_shape()) == 3
         new_shape = [1] * 4
@@ -233,7 +233,7 @@ def k_f(b, B_2, x_norm, x_sum_contrib, v_mu_sig_mu, v_sig_mu, v_mu_obs, Cinv,
     e = tf.matmul(2*b + d, v_mu_obs, transpose_a=True)
     exp = x_sum_contrib + v_mu_sig_mu - a - e
     out = ww * tf.exp(-.5*exp)
-    return tf.reduce_sum(out) * rbf_var
+    return tf.reduce_sum(out)
 
 
 @add_variable_scope(name="kernel_fun")
@@ -259,48 +259,53 @@ def make_kernel_fun(input_dims, GMM, tf_float=tf.float64):
         return y[m].astype(np.int32), x[m].astype(np.int32)
 
     len_X = tf.shape(X)[0]
-    tril_indices = tf.py_func(strict_tril_indices, [len_X],
-                              (tf.int32, tf.int32), stateful=False,
-                              name="tril_indices")
+    #tril_indices = tf.py_func(strict_tril_indices, [len_X],
+    #                          (tf.int32, tf.int32), stateful=False,
+    #                          name="tril_indices")
+
+    matrix_indices_diag = tf.reshape(tf.stack([
+        tf.tile(tf.expand_dims(tf.range(len_X), 1), [1, len_X]),
+        tf.tile(tf.expand_dims(tf.range(len_X), 0), [len_X, 1])],
+                                         axis=2), (-1, 2))
 
     K_symm_tril = tf.map_fn(
         lambda t: k_f(b.read(t[0]), B_2.read(t[0]), norm.read(t[0]),
                       sum_contrib.read(t[0]),
                       v_mu_sig_mu.read(t[1]), v_sig_mu.read(t[1]),
                       v_mu_obs.read(t[1]), Cinv.read(t[1]), norm.read(t[1]),
-                      rbf_var, name="K_symm_f"),
-        tril_indices, dtype=tf_float, parallel_iterations=10)
+                      name="K_symm_f"),
+        matrix_indices_diag, dtype=tf_float, parallel_iterations=50)
 
-    K_symm = tf.scatter_nd(tf.stack(tril_indices, axis=1),
+    K_symm = tf.scatter_nd(matrix_indices_diag, #tf.stack( axis=1),
                            K_symm_tril, (len_X, len_X), "K_symm_scatter")
-    K_symm = (K_symm + tf.transpose(K_symm)
+    K_symm = ((K_symm + tf.transpose(K_symm))/2 * rbf_var
               + tf.eye(len_X, dtype=tf_float) * (white_var + rbf_var))
 
     X2 = tf.placeholder(tf_float, [None, input_dims], name="X2")
     _, _, v_norm, _, v_mu_sig_mu, v_sig_mu, v_mu_obs, Cinv \
         = tf_points_statistics(X2, tf_GMM, M)
     len_X2 = tf.shape(X2)[0]
-
     matrix_indices = tf.reshape(tf.stack([
         tf.tile(tf.expand_dims(tf.range(len_X), 1), [1, len_X2]),
         tf.tile(tf.expand_dims(tf.range(len_X2), 0), [len_X, 1])],
                                          axis=2), (-1, 2))
+
     K_a_f = tf.map_fn(
         lambda t: k_f(b.read(t[0]), B_2.read(t[0]), norm.read(t[0]),
                       sum_contrib.read(t[0]),
                       v_mu_sig_mu.read(t[1]), v_sig_mu.read(t[1]),
                       v_mu_obs.read(t[1]), Cinv.read(t[1]), norm.read(t[1]),
-                      rbf_var, name="K_a_f"),
-        matrix_indices, dtype=tf_float, parallel_iterations=10)
-    K_a = tf.reshape(K_a_f, [len_X, len_X2])
+                      name="K_a_f"),
+        matrix_indices, dtype=tf_float, parallel_iterations=50)
+    K_a = tf.reshape(K_a_f, [len_X, len_X2]) * rbf_var
 
     dL_dK_ph = tf.placeholder(tf_float, [None, None], name="dL_dK_ph")
     l_g_symm, rbfv_g_symm = tf.gradients(
-        tf.reduce_sum(dL_dK_ph * K_symm), [lengthscale, rbf_var],
+        tf.reduce_sum(K_symm), [lengthscale, rbf_var],
         name='gradients_symm')
     l_g_a, rbfv_g_a = tf.gradients(
         tf.reduce_sum(dL_dK_ph * K_a), [lengthscale, rbf_var],
-        name='gradients_a_syy')
+        name='gradients_a')
 
     lengthscale_ph = tf.placeholder(tf_float, shape=[input_dims],
                                     name="lengthscale_ph")
