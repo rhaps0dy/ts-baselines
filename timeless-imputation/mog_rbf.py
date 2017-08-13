@@ -86,7 +86,7 @@ class UncertainMoGRBFWhite(Kern):
         """For this kernel, to save computation, we are going to assume the
         dimension 0 of the inputs bears an ID of the point. Thus, X.shape[1] ==
         input_dim + 1.
-        `cutoff` represents the % of the variance that the MoG must represent
+        `cutoff` represents the % of the weight that the MoG must represent
         before it is cut off.
         """
         super(UncertainMoGRBFWhite, self).__init__(input_dim, active_dims, name)
@@ -110,28 +110,31 @@ class UncertainMoGRBFWhite(Kern):
                 "The lengthscale must be a single number or a diagonal"
         self.link_parameters(self.white_var, self.rbf_var, self.lengthscale)
 
-        self.lengthscale_gradient = autograd.grad(self.kernel_for_derivating)
+        self._lengthscale_gradient = autograd.grad(self.kernel_for_derivating)
 
     @Cache_this(limit=3, ignore_args=())
+    def lengthscale_gradient(self, *args):
+        return self._lengthscale_gradient(*args)
+
     def kernel_for_derivating(self, lengthscale, dL_dK, X, X2):
         """ Suitable for calling `autograd.grad`, to get the gradient with
         respect to lengthscale """
         if len(lengthscale) == 1:
-            M = lengthscale[0] * np.eye(self.input_dim)
+            M = lengthscale[0]**(-2) * np.eye(self.input_dim)
         else:
-            M = np.diag(lengthscale)
-        start = time.time()
+            M = np.diag(lengthscale**(-2))
+        #start = time.time()
         X = list(map(lambda inp: uncertain_point(
             inp, self.mog, self.cutoff, M,
             single_gaussian_moment_matching=self.single_gaussian), X))
-        print("To compute map for gradient took me:", time.time() - start)
+        #print("To compute map for gradient took me:", time.time() - start)
 
-        start = time.time()
+        #start = time.time()
         if X2 is None:
             out = sum(rbf_uncertain(X[i], X[j], M) * (dL_dK[i, j] + dL_dK[j, i])
                       for i in range(len(X))
                       for j in range(i+1, len(X)))
-            ret = ((2.*self.rbf_var) * out
+            ret = (self.rbf_var * out
                    + (self.rbf_var + self.white_var) * np.trace(dL_dK))
         else:
             X2 = list(map(lambda inp: uncertain_point(
@@ -141,21 +144,24 @@ class UncertainMoGRBFWhite(Kern):
                       for i in range(len(X))
                       for j in range(len(X2)))
             ret = self.rbf_var * out
-        print("To compute matrix for gradient took me:", time.time() - start)
+        #print("To compute matrix for gradient took me:", time.time() - start)
         return ret
 
 
     @Cache_this(limit=3, ignore_args=())
     def K(self, X, X2=None):
         if len(self.lengthscale) == 1:
-            M = self.lengthscale[0] * np.eye(self.input_dim)
+            M = self.lengthscale[0]**(-2) * np.eye(self.input_dim)
         else:
-            M = np.diag(self.lengthscale)
+            M = np.diag(self.lengthscale**(-2))
         #start = time.time()
         X = list(map(lambda inp: uncertain_point(
             inp, self.mog, self.cutoff, M,
             single_gaussian_moment_matching=self.single_gaussian), X))
         #print("To compute map took me:", time.time() - start)
+        #import collections
+        #counter = collections.Counter(list(map(lambda d: len(d['weights']), X)))
+        #print(counter)
 
         #start = time.time()
         if X2 is None:
@@ -165,7 +171,7 @@ class UncertainMoGRBFWhite(Kern):
                     out[i, j] = rbf_uncertain(x, X[j], M)
             out += out.T
             out *= self.rbf_var
-            out = (out + out.T) / 2
+            #out = (out + out.T) / 2
             out.flat[::len(X)+1] = self.rbf_var + self.white_var
         else:
             X2 = list(map(lambda inp: uncertain_point(
@@ -183,17 +189,15 @@ class UncertainMoGRBFWhite(Kern):
         return (self.rbf_var + self.white_var) * np.ones(len(X))
 
     def update_gradients_full(self, dL_dK, X, X2):
-        print("Update gradients start")
         ker = self.K(X, X2)
-        self.rbf_var.gradient = np.sum(dL_dK * ker) / self.rbf_var
         if X2 is None:
             self.white_var.gradient = np.trace(dL_dK)
+            ker.flat[::len(X)+1] -= self.white_var
         else:
             self.white_var.gradient = 0.0
-        print("Lengthscale gradients start")
+        self.rbf_var.gradient = np.sum(dL_dK * ker) / self.rbf_var
         self.lengthscale.gradient = \
             self.lengthscale_gradient(np.array(self.lengthscale), dL_dK, X, X2)
-        print("Update gradients end")
 
 
     def update_gradients_diag(self, dL_dKdiag, X):
