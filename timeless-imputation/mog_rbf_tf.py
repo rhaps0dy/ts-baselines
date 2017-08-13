@@ -218,22 +218,21 @@ def k_f(b, B_2, x_norm, x_sum_contrib, v_mu_sig_mu, v_sig_mu, v_mu_obs, Cinv,
 
     b = make_X(b)
     B_2 = make_X(B_2)
-    x_norm = make_X(x_norm)
     x_sum_contrib = make_X(x_sum_contrib)
     v_mu_sig_mu = make_V(v_mu_sig_mu)
     v_sig_mu = make_V(v_sig_mu)
     v_mu_obs = tf.tile(v_mu_obs[tf.newaxis, ...],
                        [tf.shape(x_norm)[0], tf.shape(v_sig_mu)[1], 1, 1])
     Cinv = make_V(Cinv)
-    v_norm = make_V(v_norm)
 
+    ww = v_norm[tf.newaxis, :] * x_norm[:, tf.newaxis]
     # remember `v_mu_obs` is scattered
     d = B_2 @ v_mu_obs
     c = tf.where(tf.equal(v_sig_mu, 0), x=v_sig_mu, y=(v_sig_mu + b + d))
     a = tf.matmul(c, Cinv, transpose_a=True) @ c
     e = tf.matmul(2*b + d, v_mu_obs, transpose_a=True)
     exp = x_sum_contrib + v_mu_sig_mu - a - e
-    out = v_norm * x_norm * tf.exp(-.5*tf.squeeze(exp, (2, 3)))
+    out = ww * tf.exp(-.5*exp)
     return tf.reduce_sum(out) * rbf_var
 
 
@@ -352,7 +351,7 @@ class TFUncertainMoGRBFWhite(Kern):
         if X2 is None:
             K = self.sess.run(self.K_symm, {self.X_ph: X})
         else:
-            K = self.sess.run(self.K_a_symm, {self.X_ph: X, self.X2_ph: X2})
+            K = self.sess.run(self.K_a, {self.X_ph: X, self.X2_ph: X2})
         return K
 
     def Kdiag(self, X):
@@ -367,7 +366,7 @@ class TFUncertainMoGRBFWhite(Kern):
             self.white_var.gradient = np.trace(dL_dK)
         else:
             self.lengthscale.gradient, self.rbf_var.gradient \
-                = self.sess.run([self.l_g_a_symm, self.rbfv_g_a_symm], {
+                = self.sess.run([self.l_g_a, self.rbfv_g_a], {
                     self.dL_dK_ph: dL_dK,
                     self.X_ph: X,
                     self.X2_ph: X2})

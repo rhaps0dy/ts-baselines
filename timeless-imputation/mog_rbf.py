@@ -72,12 +72,11 @@ def rbf_uncertain(x, v, M_):
     d = B_2[:, :, :, obsv] @ v_mu_obs
     c = v_sig_mu + b[:, :, misv] + d[:, :, misv]
     a = tp(c) @ Cinv @ c
-    d = tp(2*b + d)[:, :, :, obsv] @ v_mu_obs
-    exp = x_sum_contrib + v_mu_sig_mu - a - d
+    e = tp(2*b + d)[:, :, :, obsv] @ v_mu_obs
+    exp = x_sum_contrib + v_mu_sig_mu - a - e
 
     exp = np.squeeze(exp, (-2, -1))
     assert exp.shape == ww.shape
-
     return np.sum(ww * np.exp(-.5*exp))
 
 class UncertainMoGRBFWhite(Kern):
