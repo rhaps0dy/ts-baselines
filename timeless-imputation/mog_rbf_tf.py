@@ -112,9 +112,11 @@ def tf_conditional_mog(_inputs, GMM, cutoff=1.0):
                 mis_obs, obs_mis, obs_obs]
 
     return tf.cond(tf.equal(n_missing, 0),
-                   true_fn=lambda: [tf.ones([1], tf_float),
-                                    tf.zeros([1, 0], tf_float),
-                                    tf.zeros([1, 0, 0], tf_float),
+                   true_fn=lambda: [#tf.ones([1], tf_float),
+                       tf.scatter_nd([[0]], tf.ones([1], tf_float),
+                                     shape=[n_gaussians]),
+                                    tf.zeros([n_gaussians, 0], tf_float),
+                                    tf.zeros([n_gaussians, 0, 0], tf_float),
                                     mis, obs, mis_mis, mis_obs,
                                     obs_mis, obs_obs],
                    false_fn=lambda: tf.cond(
@@ -179,26 +181,11 @@ def tf_uncertain_point(inp, GMM, M):
 
 @add_variable_scope(name="tf_points_statistics")
 def tf_points_statistics(inputs, GMM, M, parallel_iterations=50):
-    tf_float = inputs.dtype
-    num_elems = tf.shape(inputs)[0]
-    stats = list(tf.TensorArray(tf_float, size=num_elems,
-                                clear_after_read=False)
-                 for _ in range(8))  # to accommodate all returned tensors
-
-    def loop_body(i, *arrays):
-        inp = inputs[i]
-        point = tf_uncertain_point(inp, GMM, M)
-        outs = map(lambda av: av[0].write(i, av[1]), zip(arrays, point))
-        return (i + 1,) + tuple(outs)
-
-    _, *arrs = tf.while_loop(
-        lambda i, *_: i < num_elems, loop_body, [0]+stats)
-    return arrs
-    # return tf.map_fn(lambda i: tf_uncertain_point(i, GMM, M),
-    #                  inputs, dtype=[inputs.dtype]*8,
-    #                  parallel_iterations=parallel_iterations,
-    #                  back_prop=True,
-    #                  name="points_stats")
+    return tf.map_fn(lambda i: tf_uncertain_point(i, GMM, M),
+                     inputs, dtype=[inputs.dtype]*8,
+                     parallel_iterations=parallel_iterations,
+                     back_prop=True,
+                     name="points_stats")
 
 
 @add_variable_scope()
@@ -236,6 +223,48 @@ def k_f(b, B_2, x_norm, x_sum_contrib, v_mu_sig_mu, v_sig_mu, v_mu_obs, Cinv,
     return tf.reduce_sum(out)
 
 
+@add_variable_scope()
+def batch_k_f(b, B_2, x_norm, x_sum_contrib, v_mu_sig_mu, v_sig_mu, v_mu_obs,
+              Cinv, v_norm):
+    ww = tf.squeeze(v_norm[tf.newaxis, :, tf.newaxis, :]
+                    * x_norm[:, tf.newaxis, :, tf.newaxis], axis=(4, 5))
+
+    # B_2 = (x, 15, 12, 12)
+    # v_mu_obs = (y, 1, 12, 1)
+    d = tf.transpose(tf.tensordot(B_2, v_mu_obs, [[3], [2]]),
+                     [0, 3, 1, 4, 2, 5])
+    # d = (x, 15, 12, y, 1, 1) -transpose-> (x, y, 15, 1, 12, 1)
+
+    expd_v_sig_mu = v_sig_mu[tf.newaxis, :, tf.newaxis, :, :, :]
+    expd_b = b[:, tf.newaxis, :, tf.newaxis, :, :]
+    c_sum = expd_v_sig_mu + expd_b + d
+    tiled_mask = tf.tile(tf.equal(expd_v_sig_mu, 0),
+                         [tf.shape(b)[0], 1, tf.shape(b)[1], 1, 1, 1])
+    c = tf.where(tiled_mask, x=tf.zeros_like(c_sum), y=c_sum)
+    # c = (x, y, 15, 1, 12, 1)
+
+    expd_Cinv = Cinv[tf.newaxis, :, tf.newaxis, :, :, :]
+    # expd_Cinv = (1, y, 1, 15, 12, 12)
+    c_C = tf.reduce_sum(c * expd_Cinv, axis=4)
+    # c_C = (x, y, 15, 15, <summed out>, 12)
+    c_C_c = tf.reduce_sum(c_C * tf.squeeze(c, axis=5), axis=4)
+    # c_C_c = (x, y, 15, 15)
+
+    # d = (x, y, 15, 1, 12, 1)
+    # expd_b = (x, 1, 15, 1, 12, 1)
+    # v_mu_obs = (y, 1, 12, 1)
+    e = tf.reduce_sum((2*expd_b + d)
+                      * v_mu_obs[tf.newaxis, :, tf.newaxis, :, :, :],
+                      axis=4, keep_dims=True)
+    # e = (x, y, 15, 1, 1, 1)
+
+    expd_xsc = x_sum_contrib[:, tf.newaxis, :, tf.newaxis, :, :]
+    expd_vmsm = v_mu_sig_mu[tf.newaxis, :, tf.newaxis, :, :, :]
+    exp = tf.squeeze(expd_xsc + expd_vmsm - e, axis=(4, 5)) - c_C_c
+    out = ww * tf.exp(-.5 * exp)
+    return tf.reduce_sum(out, axis=(2, 3))
+
+
 @add_variable_scope(name="kernel_fun")
 def make_kernel_fun(input_dims, GMM, tf_float=tf.float64):
     tf_GMM = dict((l, tf.constant(value=v, dtype=tf_float))
@@ -253,55 +282,23 @@ def make_kernel_fun(input_dims, GMM, tf_float=tf.float64):
     b, B_2, norm, sum_contrib, v_mu_sig_mu, v_sig_mu, v_mu_obs, Cinv \
         = tf_points_statistics(X, tf_GMM, M)
 
-    def strict_tril_indices(n):
-        y, x = np.tril_indices(n)
-        m = y != x
-        return y[m].astype(np.int32), x[m].astype(np.int32)
-
-    len_X = tf.shape(X)[0]
-    #tril_indices = tf.py_func(strict_tril_indices, [len_X],
-    #                          (tf.int32, tf.int32), stateful=False,
-    #                          name="tril_indices")
-
-    matrix_indices_diag = tf.reshape(tf.stack([
-        tf.tile(tf.expand_dims(tf.range(len_X), 1), [1, len_X]),
-        tf.tile(tf.expand_dims(tf.range(len_X), 0), [len_X, 1])],
-                                         axis=2), (-1, 2))
-
-    K_symm_tril = tf.map_fn(
-        lambda t: k_f(b.read(t[0]), B_2.read(t[0]), norm.read(t[0]),
-                      sum_contrib.read(t[0]),
-                      v_mu_sig_mu.read(t[1]), v_sig_mu.read(t[1]),
-                      v_mu_obs.read(t[1]), Cinv.read(t[1]), norm.read(t[1]),
-                      name="K_symm_f"),
-        matrix_indices_diag, dtype=tf_float, parallel_iterations=50)
-
-    K_symm = tf.scatter_nd(matrix_indices_diag, #tf.stack( axis=1),
-                           K_symm_tril, (len_X, len_X), "K_symm_scatter")
-    K_symm = ((K_symm + tf.transpose(K_symm))/2 * rbf_var
-              + tf.eye(len_X, dtype=tf_float) * (white_var + rbf_var))
-
+    K_symm_raw = batch_k_f(b, B_2, norm, sum_contrib, v_mu_sig_mu, v_sig_mu,
+                           v_mu_obs, Cinv, norm) * rbf_var
+    K_symm_diagonal = (tf.eye(tf.shape(K_symm_raw)[0], dtype=tf_float)
+                       * (rbf_var + white_var))
+    K_symm = tf.where(tf.equal(K_symm_diagonal, 0.),
+                      x=K_symm_raw,
+                      y=K_symm_diagonal)
     X2 = tf.placeholder(tf_float, [None, input_dims], name="X2")
     _, _, v_norm, _, v_mu_sig_mu, v_sig_mu, v_mu_obs, Cinv \
         = tf_points_statistics(X2, tf_GMM, M)
-    len_X2 = tf.shape(X2)[0]
-    matrix_indices = tf.reshape(tf.stack([
-        tf.tile(tf.expand_dims(tf.range(len_X), 1), [1, len_X2]),
-        tf.tile(tf.expand_dims(tf.range(len_X2), 0), [len_X, 1])],
-                                         axis=2), (-1, 2))
 
-    K_a_f = tf.map_fn(
-        lambda t: k_f(b.read(t[0]), B_2.read(t[0]), norm.read(t[0]),
-                      sum_contrib.read(t[0]),
-                      v_mu_sig_mu.read(t[1]), v_sig_mu.read(t[1]),
-                      v_mu_obs.read(t[1]), Cinv.read(t[1]), norm.read(t[1]),
-                      name="K_a_f"),
-        matrix_indices, dtype=tf_float, parallel_iterations=50)
-    K_a = tf.reshape(K_a_f, [len_X, len_X2]) * rbf_var
+    K_a = batch_k_f(b, B_2, norm, sum_contrib, v_mu_sig_mu, v_sig_mu,
+                    v_mu_obs, Cinv, v_norm)
 
     dL_dK_ph = tf.placeholder(tf_float, [None, None], name="dL_dK_ph")
     l_g_symm, rbfv_g_symm = tf.gradients(
-        tf.reduce_sum(K_symm), [lengthscale, rbf_var],
+        tf.reduce_sum(dL_dK_ph * K_symm), [lengthscale, rbf_var],
         name='gradients_symm')
     l_g_a, rbfv_g_a = tf.gradients(
         tf.reduce_sum(dL_dK_ph * K_a), [lengthscale, rbf_var],
@@ -352,7 +349,7 @@ class TFUncertainMoGRBFWhite(Kern):
         })
 
     @Cache_this(limit=3, ignore_args=())
-    def K(self, X, X2=None):
+    def K(self, X, X2=None, matrix_size=70):
         if X2 is None:
             K = self.sess.run(self.K_symm, {self.X_ph: X})
         else:
