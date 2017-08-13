@@ -294,7 +294,7 @@ def make_kernel_fun(input_dims, GMM, tf_float=tf.float64):
         = tf_points_statistics(X2, tf_GMM, M)
 
     K_a = batch_k_f(b, B_2, norm, sum_contrib, v_mu_sig_mu, v_sig_mu,
-                    v_mu_obs, Cinv, v_norm)
+                    v_mu_obs, Cinv, v_norm) * rbf_var
 
     dL_dK_ph = tf.placeholder(tf_float, [None, None], name="dL_dK_ph")
     l_g_symm, rbfv_g_symm = tf.gradients(
@@ -348,30 +348,73 @@ class TFUncertainMoGRBFWhite(Kern):
             self.white_var_ph: np.array(self.white_var)[0],
         })
 
-    @Cache_this(limit=3, ignore_args=())
-    def K(self, X, X2=None, matrix_size=70):
-        if X2 is None:
-            K = self.sess.run(self.K_symm, {self.X_ph: X})
-        else:
-            K = self.sess.run(self.K_a, {self.X_ph: X, self.X2_ph: X2})
-        return K
+#    @Cache_this(limit=3, ignore_args=())
+#    def K(self, X, X2=None, matrix_size=70):
+#        if X2 is None:
+#            K = self.sess.run(self.K_symm, {self.X_ph: X})
+#        else:
+#            K = self.sess.run(self.K_a, {self.X_ph: X, self.X2_ph: X2})
+#        return K
 
     def Kdiag(self, X):
         return (self.rbf_var + self.white_var) * np.ones(len(X))
 
-    def update_gradients_full(self, dL_dK, X, X2):
+    @Cache_this(limit=3, ignore_args=())
+    def K(self, X, X2=None, stride=70):
+        max_index_i = len(X)
+        max_index_j = max_index_i if X2 is None else len(X2)
+        _X2 = X if X2 is None else X2
+
+        kernel = np.empty((max_index_i, max_index_j), np.float64)
+
+        for i in range(0, max_index_i, stride):
+            min_index_j = (i if X2 is None else 0)
+            for j in range(min_index_j, max_index_j, stride):
+                print("doing", i, j)
+                if i == j and X2 is None:
+                    kernel[i:i+stride, i:i+stride] = self.sess.run(
+                        self.K_symm, {self.X_ph: X[i:i+stride, :]})
+                else:
+                    out = self.sess.run(self.K_a, {
+                            self.X_ph: X[i:i+stride, :],
+                            self.X2_ph: _X2[j:j+stride, :]})
+                    kernel[i:i+stride, j:j+stride] = out
+                    if X2 is None:
+                        kernel[j:j+stride, i:i+stride] = out.T
+        return kernel
+
+    def update_gradients_full(self, dL_dK, X, X2, stride=50):
+        max_index_i = len(X)
+        max_index_j = max_index_i if X2 is None else len(X2)
+        _X2 = X if X2 is None else X2
+
+        self.lengthscale.gradient[...] = 0.
+        self.rbf_var.gradient[...] = 0.
+
+        for i in range(0, max_index_i, stride):
+            min_index_j = (i if X2 is None else 0)
+            for j in range(min_index_j, max_index_j, stride):
+                if i == j and X2 is None:
+                    lg, rvg = self.sess.run(
+                        [self.l_g_symm, self.rbfv_g_symm], {
+                            self.dL_dK_ph: dL_dK[i:i+stride, i:i+stride],
+                            self.X_ph: X[i:i+stride, :]})
+                    self.lengthscale.gradient[...] += lg
+                    self.rbf_var.gradient[...] += rvg
+                else:
+                    partial_dev = dL_dK[i:i+stride, j:j+stride]
+                    if X2 is None:
+                        partial_dev += dL_dK[j:j+stride, i:i+stride].T
+
+                    lg, rvg = self.sess.run([self.l_g_a, self.rbfv_g_a], {
+                            self.dL_dK_ph: partial_dev,
+                            self.X_ph: X[i:i+stride, :],
+                            self.X2_ph: _X2[j:j+stride, :]})
+                    self.lengthscale.gradient[...] += lg
+                    self.rbf_var.gradient[...] += rvg
         if X2 is None:
-            self.lengthscale.gradient, self.rbf_var.gradient \
-                = self.sess.run([self.l_g_symm, self.rbfv_g_symm], {
-                    self.dL_dK_ph: dL_dK,
-                    self.X_ph: X})
             self.white_var.gradient = np.trace(dL_dK)
         else:
-            self.lengthscale.gradient, self.rbf_var.gradient \
-                = self.sess.run([self.l_g_a, self.rbfv_g_a], {
-                    self.dL_dK_ph: dL_dK,
-                    self.X_ph: X,
-                    self.X2_ph: X2})
             self.white_var.gradient = 0.0
 
     def update_gradients_diag(self, dL_dKdiag, X):
