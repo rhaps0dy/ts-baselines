@@ -358,7 +358,7 @@ if __name__ == '__main__':
 
     #test_df = get_data()
     test_df = pu.load("amputed_BostonHousing_MCAR_total_0.3.pkl.gz")
-    test_df = (test_df - test_df.mean()) / test_df.std()
+    test_df = (test_df - test_df.mean()) / test_df.std(ddof=0)
     m = pu.load(#"impute_benchmark/imputed_GMM_BostonHousing_MCAR_total_0.3/"
                 "params.pkl.gz")
     assert len(test_df.values[0].shape) == 1

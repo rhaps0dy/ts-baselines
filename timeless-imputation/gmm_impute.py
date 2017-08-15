@@ -125,7 +125,7 @@ def single_gaussian_moment_matching(d):
     # https://stats.stackexchange.com/questions/16608/what-is-the-variance-of-the-weighted-mixture-of-two-gaussians
     variances = np.sum(d['covariances'] * np.eye(d['covariances'].shape[1]), axis=2)
     var_mix = np.sum(variances * d['weights'][:, np.newaxis], axis=0)
-    var = var_mix + np.sum(ms * d['means'], axis=0) - mean
+    var = var_mix + np.sum(ms * d['means'], axis=0) - mean**2
     return mean, var
 
 
@@ -152,3 +152,32 @@ def _gmm_impute(m, inputs, n_impute, sample_impute=False):
             _mask[sample_impute] = True
             outputs[:, i, mask & _mask] = samples_from_mixture(d, n_impute)[:, _mask[mask]]
     return outputs, outputs_var
+
+def imputed_log_likelihood(m, inputs, targets, num_keys):
+    log_likelihood = 0.
+    num_key_mask = np.zeros([inputs.shape[1]], dtype=np.bool)
+    num_key_mask[num_keys] = True
+    all_missing_inputs = np.isnan(inputs)
+    for inp, mask, tg in zip(inputs, all_missing_inputs, targets):
+        if not np.any(mask & num_key_mask):
+            continue
+        d = conditional_mog(m, inp, mask, cutoff=1.0)
+
+        means = d['means'][:, num_key_mask[mask]]
+        covariances = (d['covariances']
+                       [:, num_key_mask[mask], :][:, :, num_key_mask[mask]])
+
+        diffs = tg[mask & num_key_mask] - means
+        n_features = np.sum(mask, axis=0, keepdims=True)
+        right_diffs = np.expand_dims(diffs, axis=2)
+        left_diffs = np.expand_dims(diffs, axis=1)
+        exponent = left_diffs @ np.linalg.inv(covariances) @ right_diffs
+
+        exponent = -.5 * np.squeeze(exponent, axis=[1, 2])
+        divider = np.linalg.det(covariances)**(-.5)
+        likelihood = np.sum(d['weights'] * divider * np.exp(exponent), axis=0)
+        assert len(likelihood.shape) == 0
+        log_likelihood += np.log(np.clip(likelihood, np.finfo(np.float64).tiny, np.inf))
+
+    log_likelihood -= .5 * np.sum(all_missing_inputs) * np.log(2*np.pi)
+    return log_likelihood

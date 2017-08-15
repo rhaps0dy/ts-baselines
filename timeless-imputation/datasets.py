@@ -104,6 +104,8 @@ def benchmark(impute_methods, datasets, tests_to_perform, do_not_compute=False,
                     [ampute_fun_name][str(proportion)] = np.nan
                 table['PFC'][algo_name][norm_type][data_name]\
                     [ampute_fun_name][str(proportion)] = np.nan
+                table['norm_log_l'][algo_name][norm_type][data_name]\
+                    [ampute_fun_name][str(proportion)] = np.nan
                 continue
             else:
                 run_name = 'imputed_{:s}_{:s}'.format(algo_name, amputed_name)
@@ -112,6 +114,23 @@ def benchmark(impute_methods, datasets, tests_to_perform, do_not_compute=False,
                 _id = impute_f(
                     os.path.join(path, run_name), (_ad, cat_keys),
                     full_data=(_fd, cat_keys))
+
+            if isinstance(_id, tuple):
+                _id, _var = _id
+                log_likelihood_fname = os.path.join(path, run_name,
+                                                    'log_likelihood.pkl')
+                if os.path.exists(log_likelihood_fname):
+                    print("Loaded log_likelihood from file:", log_likelihood_fname)
+                    log_likelihood = pu.load(log_likelihood_fname)
+                else:
+                    print("Calculating log-likelihood")
+                    log_likelihood = utils.log_likelihood(_ad, _id, _fd, _var)
+                table['norm_log_l'][algo_name][norm_type][data_name]\
+                    [ampute_fun_name][str(proportion)] = log_likelihood
+            else:
+                table['norm_log_l'][algo_name][norm_type][data_name]\
+                    [ampute_fun_name][str(proportion)] = utils.log_likelihood(
+                        _ad, _id, _fd)
 
             imputed_data = utils.unnormalise_dataframes(moments, _id)
             d = utils.reconstruction_metrics(amputed_data, full_data,

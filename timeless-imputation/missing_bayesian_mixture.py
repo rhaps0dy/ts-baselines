@@ -233,7 +233,7 @@ def impute_bayes_gmm(log_path, dataset, number_imputations=100, full_data=None,
     return ret
 
 
-def mf_initial_impute(log_path, df, info, n_components=15, n_init=5,
+def mf_initial_impute(log_path, df, full_data, info, n_components=15, n_init=5,
                       init_params='random', ignore_categories=False):
     params_path = os.path.join(log_path, 'params.pkl.gz')
     if os.path.exists(params_path):
@@ -265,12 +265,12 @@ def mf_initial_impute(log_path, df, info, n_components=15, n_init=5,
         for k in cat_keys:
             for kk in info['cat_dummies'][k]:
                 categoric_indices.append(df_keys.index(kk))
-        n_impute = 100000
+        n_impute = 2000
     _id, var_id = gmm_impute._gmm_impute(d, df.values, n_impute=n_impute,
                                          sample_impute=categoric_indices)
     if not ignore_categories:
         for k in cat_keys:
-            # Monte-Carlo integral of softmax
+            # Softmax for every row and sample
             if len(info['cat_dummies']) > 1:
                 min_i = 1000000
                 max_i = 0
@@ -278,13 +278,43 @@ def mf_initial_impute(log_path, df, info, n_components=15, n_init=5,
                     min_i = min(min_i, df_keys.index(kk))
                     max_i = max(max_i, df_keys.index(kk))
                 print(k, min_i, max_i, df_keys)
-                _id[:, min_i:max_i+1] = np.exp(_id[:, min_i:max_i+1])
-                _id[:, min_i:max_i+1] /= np.sum(_id[:, min_i:max_i+1], axis=2, keepdims=True)
+                _id[:, :, min_i:max_i+1] = np.exp(_id[:, :, min_i:max_i+1])
+                _id[:, :, min_i:max_i+1] /= np.sum(_id[:, :, min_i:max_i+1],
+                                                   axis=2, keepdims=True)
             else:
+                # Then we will average over this, so the remaining quantity
+                # will be the % of variables over 0.5
                 i = cat_keys.index(kk)
-                _id[:, i] = np.round(_id[:, i]).clip(0, 1)
-
+                _id[:, :, i] = np.round(_id[:, :, i]).clip(0, 1)
+    # Monte-Carlo integrate the quantities above
     imputed_data = np.mean(_id, axis=0)
+
+    num_keys = list(df_keys.index(k) for k in df_keys if k not in cat_keys)
+    log_likelihood = gmm_impute.imputed_log_likelihood(
+        d, df.values, full_data.values, num_keys)
+
+    for c in cat_keys:
+        dummies = info['cat_dummies'][k]
+        if len(dummies) == 1:
+            d_i = df_keys.index(dummies[0])
+            probas = imputed_data[:, d_i]
+            missing = np.isnan(df[dummies[0]].values)
+            values = full_data[dummies[0]].values
+            log_likelihood += np.sum(
+                np.log(np.abs(probas[missing] - values[missing])))
+        else:
+            probas = imputed_data[list(df_keys.index(k) for k in dummies)]
+            missing_each = np.isnan(df[dummies].values)
+            missing = np.all(missing_each, axis=1)
+            assert np.all(missing == np.any(missing_each, axis=1)), """When a
+                row has a missing value, it must have all missing values"""
+            values = full_data[dummies].values
+            # Cross-entropy = log likelihood
+            log_likelihood += np.sum(values[missing, :]
+                                     * np.log(probas[missing, :]))
+
+    pu.dump(log_likelihood, os.path.join(log_path, 'log_likelihood.pkl'))
+
     imputed_df = datasets.dataframe_like(df, imputed_data)
     variance_df = datasets.dataframe_like(df, var_id)
 

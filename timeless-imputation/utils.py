@@ -179,7 +179,7 @@ def normalise_dataframes(*dataframes, method='mean_std'):
                numerical columns"""
     if method == 'mean_std':
         mean = df[numerical_columns].mean(axis=0)
-        std = df[numerical_columns].std(axis=0)
+        std = df[numerical_columns].std(axis=0, ddof=0)
     elif method == 'min_max':
         mean = df[numerical_columns].min(axis=0)
         std = df[numerical_columns].max(axis=0) - mean
@@ -197,7 +197,7 @@ def unnormalise_dataframes(mean_std, dataframes):
     return _rescale_dataframes(dataframes, mean, std, lambda d, m, s: d*s+m)
 
 
-def impute_mice(dataset, number_imputations=5, method='pmm', full_data=None):
+def impute_mice(dataset, number_imputations=10, method='pmm', full_data=None):
     "Imputed dataset using MICE"
     del full_data
     df_to_R(dataset, "df")
@@ -212,15 +212,17 @@ def impute_mice(dataset, number_imputations=5, method='pmm', full_data=None):
 
 def impute_missforest(dataset, number_imputations=1, full_data=None):
     del full_data
-    assert number_imputations == 1
-    if dataset[0].shape[1] < n_cores[0]:
-        par = 'no'
-    else:
-        par = 'variables'
-    df_to_R(dataset, "df")
-    R("imputed_df <- missForest(df, parallelize='{:s}')".format(par))
-    df, cat_idx = df_from_R("imputed_df$ximp")
-    return [df]
+    out = []
+    for _ in range(number_imputations):
+        if dataset[0].shape[1] < n_cores[0]:
+            par = 'no'
+        else:
+            par = 'variables'
+        df_to_R(dataset, "df")
+        R("imputed_df <- missForest(df, parallelize='{:s}')".format(par))
+        df, cat_idx = df_from_R("imputed_df$ximp")
+        out.append(df)
+    return out
 
 
 def R_random_forest(x, y, misX, ntree=100):
@@ -275,6 +277,7 @@ def percentage_falsely_classified(amputed_data, full_data, imputed_data):
 def normalised_rmse(mask_missing, original_df, multiple_imputed_df=None,
                     rmse_val=None):
     """Normalised RMSE:
+    NOTE: the arguments are named _df but are supposed to be np.arrays.
     For normalised RMSE, we take mean_std normalisation over the missing
     values only"""
     if rmse_val is None:
@@ -285,6 +288,34 @@ def normalised_rmse(mask_missing, original_df, multiple_imputed_df=None,
     return rmse_val / np.std(arr)
 
 
+def log_likelihood(amputed_df, multiple_imputed_dfs, full_df, var_df=None):
+    """Log-likelihood of a Gaussian fitted on the multiple_imputed_df"""
+    num_keys = list(filter(lambda k: full_df[k].dtype == np.float64,
+                           full_df.keys()))
+
+    midf_arr = list(df[num_keys].values for df in multiple_imputed_dfs)
+    midf = np.stack(midf_arr, axis=0)
+    if midf.shape[0] == 1 and var_df is None:
+        return -np.inf
+    all_means = np.mean(midf, axis=0)
+    if var_df is None:
+        all_variances = np.var(midf, axis=0, ddof=1)
+    else:
+        all_variances = var_df[num_keys].values
+    all_variances = np.clip(all_variances, np.finfo(np.float64).tiny, np.inf)
+
+    ll = 0.
+    # Sum of per-point marginal log-likelihood. Weighs more complete points unfairly.
+    # Possible solution: divide in buckets by number of missing values
+    for tg, mask, mean, var in zip(full_df[num_keys].values,
+                                   np.isnan(amputed_df[num_keys].values),
+                                   all_means, all_variances):
+        white = np.sum((tg[mask] - mean[mask])**2 / var[mask])
+        norm = np.log(2*np.pi) * len(tg[mask]) + np.sum(np.log(var[mask]))
+        ll -= .5 * (norm + white)
+    return ll
+
+
 def reconstruction_metrics(amputed_data, full_data, imputed_data):
     # RMSE of 0-1 normalised data
     if not isinstance(imputed_data, list):
@@ -292,7 +323,6 @@ def reconstruction_metrics(amputed_data, full_data, imputed_data):
     dfs, moments = normalise_dataframes(full_data, amputed_data, *imputed_data,
                                         method='min_max')
     rmse_fd, rmse_ad, *rmse_id = dfs
-    rmse_ad, rmse_fd, rmse_id = amputed_data, full_data, imputed_data
 
     numerical_keys = list(moments[0].keys())
     multiple_imputed_array = list(d[numerical_keys].values for d in rmse_id)
@@ -306,3 +336,4 @@ def reconstruction_metrics(amputed_data, full_data, imputed_data):
     d['PFC'] = percentage_falsely_classified(amputed_data, full_data,
                                              imputed_data)
     return d
+

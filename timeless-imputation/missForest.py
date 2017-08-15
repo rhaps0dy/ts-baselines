@@ -96,21 +96,21 @@ def predict(df, df_var, other_info, dense_df, prev_df, complete_df, train_mask,
                 knn_type=knn_type, **kwargs)
     rf.fit(X[train_mask], X_var[train_mask], y[train_mask], optimize=optimize)
     if hasattr(rf, "m") and hasattr(rf.m.kern, "rbf"):
-        pu.dump({"rbf_variance": rf.m.kern.rbf.variance,
-                 "white_variance": rf.m.kern.white.variance,
-                 "rbf_lengthscale": rf.m.kern.rbf.lengthscale},
+        pu.dump({"rbf_variance": np.array(rf.m.kern.rbf.variance),
+                 "white_variance": np.array(rf.m.kern.white.variance),
+                 "rbf_lengthscale": np.array(rf.m.kern.rbf.lengthscale)},
                 model_fname)
 
     if key in cat_dummies:
         n_cats = y.max() + 1
         update_ks = cat_dummies[key]
         if len(cat_dummies[key]) == 1 and n_cats > 2:
-            out, _ = rf.predict(X, X_var)[:, np.newaxis]
+            out = rf.predict(X, X_var)[:, np.newaxis]
         else:
-            out, _ = rf.predict_proba(X, X_var)
+            out = rf.predict_proba(X, X_var)
     else:
         update_ks = [key]
-        out, _ = rf.predict(X, X_var)
+        out = rf.predict(X, X_var)
     if isinstance(out, tuple):
         to_return = []
         for i, o in enumerate(out):
@@ -180,18 +180,25 @@ def postprocess_dataframe(df, info, reindex_categories=True):
         out.loc[nans[k], k] = category_dae.NA_int32
     return out
 
-def mean_impute(log_path, df, info):
+def mean_impute(log_path, df, full_data, info):
     """This automatically also puts the probabilities of unordered categoricals
     and it should be OK with ordered categoricals"""
     return (df.fillna(df.mean()),
             (df.applymap(lambda x: np.nan if np.isnan(x) else 0.0)
              .fillna(df.std())),
             None)
-def no_impute(log_path, df, info):
+def no_impute(log_path, df, full_data, info):
     return (df,
             (df.applymap(lambda x: np.nan if np.isnan(x) else 0.0)
              .fillna(df.std())),
             None)
+
+def KNN_GP_impute(log_path, df, info):
+    name = os.path.basename(log_path.rstrip("/"))
+    fname = name[name.find("BostonHousing"):]
+    print(fname)
+    long_path = pu.load("impute_benchmark_old/impute_benchmark/imputed_GP_KNN_kernel_5_iter00_{:s}/iter_1.pkl.gz".format(fname))
+    return long_path + (None,)
 
 
 def impute(log_path, dataset, full_data, sequential=True,
@@ -203,7 +210,17 @@ def impute(log_path, dataset, full_data, sequential=True,
         os.mkdir(log_path)
     memoized_fname = os.path.join(log_path, "mf_out.pkl.gz")
     if os.path.exists(memoized_fname):
-        return pu.load(memoized_fname)
+        data = pu.load(memoized_fname)
+        if not isinstance(data, tuple):
+            for i in range(50):
+                f_path = os.path.join(log_path, "iter_{:d}.pkl.gz".format(i))
+                if not os.path.exists(f_path):
+                    i -= 1
+                    f_path = os.path.join(log_path, "iter_{:d}.pkl.gz".format(i))
+                    break
+            assert i < 50, "impossible so many iterations"
+            return data, pu.load(f_path)[1]
+        return data
 
     info = category_dae.dataset_dimensions_info(dataset)
     test_df, masks_usable = preprocess_dataframe(
@@ -217,7 +234,7 @@ def impute(log_path, dataset, full_data, sequential=True,
     if not os.path.exists(impute_log_path):
         os.mkdir(impute_log_path)
     test_df, test_df_var, test_df_other_first_iteration = initial_impute(
-        impute_log_path, test_df, info)
+        impute_log_path, test_df, full_data[0], info)
     #test_df = full_data[0].copy()
     #test_df_var = test_df.applymap(lambda _: 0.0)
     #test_df_other_first_iteration = None
@@ -274,12 +291,15 @@ def impute(log_path, dataset, full_data, sequential=True,
             if isinstance(y, tuple):
                 y, y_var = y
             else:
-                y_var = y.applymap(lambda _: 0.0)
+                y_var = None
 
             if sequential:
                 update_ks = list(y.keys())
                 test_df.loc[~mask, update_ks] = y[~mask]
-                test_df_var.loc[~mask, update_ks] = y_var[~mask]
+                if y_var is None:
+                    test_df_var = None
+                else:
+                    test_df_var.loc[~mask, update_ks] = y_var[~mask]
                 predicted_df.loc[:, update_ks] = y
                 dense_df = postprocess_dataframe(test_df, info,
                                                  reindex_categories=False)
@@ -290,7 +310,10 @@ def impute(log_path, dataset, full_data, sequential=True,
             for _mask, y, y_var in updates:
                 update_ks = list(y.keys())
                 test_df.loc[_mask, update_ks] = y[_mask]
-                test_df_var.loc[_mask, update_ks] = y_var[_mask]
+                if y_var is None:
+                    test_df_var = None
+                else:
+                    test_df_var.loc[_mask, update_ks] = y_var[_mask]
                 predicted_df.loc[:, update_ks] = y
             dense_df = postprocess_dataframe(test_df, info,
                                              reindex_categories=False)
@@ -326,7 +349,7 @@ def impute(log_path, dataset, full_data, sequential=True,
         dense_df, info, ignore_ordered=ignore_ordered,
         reindex_categories=False)[0], info)]
     pu.dump(out, memoized_fname)
-    return out
+    return out, test_df_var
 
 
 class TestPrePostprocessing(unittest.TestCase):
