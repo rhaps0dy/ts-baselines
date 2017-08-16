@@ -2,6 +2,7 @@ import numpy as np
 import GPy
 from paramz.caching import Cache_this
 import time
+import collections
 
 
 class RBFWhiteKNNCheating(GPy.kern.src.kern.CombinationKernel):
@@ -19,14 +20,24 @@ class RBFWhiteKNNCheating(GPy.kern.src.kern.CombinationKernel):
         assert knn_type in {'kernel_avg', 'kernel_weighted_mean', 'mean'}
         self.knn_type = knn_type
 
+        self.evaluate_period = 5
+        self.evaluate_now = collections.defaultdict(lambda: 0, {})
+
     def reset_times(self):
         self.neighbours_time = 0.
 
     def print_times(self):
         print("neighbours time:", self.neighbours_time, "seconds")
 
-    @Cache_this(limit=3, ignore_args=())
     def neighbours(self, X):
+        if self.evaluate_now[len(X)] != 0:
+            self.evaluate_now[len(X)] = (
+                self.evaluate_now[len(X)] + 1) % self.evaluate_period
+            return self.cached_neighbours
+
+        self.evaluate_now[len(X)] = (
+            self.evaluate_now[len(X)] + 1) % self.evaluate_period
+
         start_time = time.time()
         diff = X[:, np.newaxis, :] - self.complete_dset[np.newaxis, :, :]
         missing = np.isnan(diff)
@@ -40,7 +51,7 @@ class RBFWhiteKNNCheating(GPy.kern.src.kern.CombinationKernel):
         # The error gets corrected later
         correct[np.isnan(correct)] = 0.
 
-        bad_kernel_dist = np.exp(-.5 * dist * correct)
+        bad_kernel_dist = np.exp(-.5 * dist * correct)  # TODO: substitue for K_of_r and Matérn
         # The diagonal gets sorted to the end, it has the maximum kernel
         # distance
         neighbours_i_all = np.argsort(bad_kernel_dist, axis=-1)
@@ -81,7 +92,9 @@ class RBFWhiteKNNCheating(GPy.kern.src.kern.CombinationKernel):
                 pdb.set_trace()
         elif self.knn_type == 'mean':
             out = np.nanmean(neigh_values, axis=1, keepdims=True)
-        return np.where(np.isnan(out), neigh_mean, out)
+        neighbours = np.where(np.isnan(out), neigh_mean, out)
+        self.cached_neighbours = neighbours
+        return neighbours
 
     @Cache_this(limit=3, ignore_args=())
     def neighbour_average(self, fun, X, X2=None):

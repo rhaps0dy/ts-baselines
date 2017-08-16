@@ -71,6 +71,9 @@ def predict(df, df_var, other_info, dense_df, prev_df, complete_df, train_mask,
     else:
         X = df.drop(key, axis=1)
         #complete_X = complete_df.drop(key, axis=1)
+        if df_var is None:
+            import pdb
+            pdb.set_trace()
         X_var = df_var.drop(key, axis=1)
         key_first = key_last = list(df.keys()).index(key)
         y = df[key]
@@ -116,9 +119,13 @@ def predict(df, df_var, other_info, dense_df, prev_df, complete_df, train_mask,
     if isinstance(out, tuple):
         to_return = []
         for i, o in enumerate(out):
-            if not np.any(np.isnan(o)):
-                to_return.append(pd.DataFrame(o, index=y.index,
-                                              columns=update_ks))
+            try:
+                if o is not None and not np.any(np.isnan(o)):
+                    to_return.append(pd.DataFrame(o, index=y.index,
+                                                columns=update_ks))
+            except Exception:
+                import pdb
+                pdb.set_trace()
         if len(to_return) > 1:
             return tuple(to_return)
         return to_return[0]

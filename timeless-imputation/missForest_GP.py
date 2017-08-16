@@ -54,6 +54,9 @@ class KNNKernelMixin:
             self.m.optimize('bfgs', max_iters=max_iters)
 
     def predict(self, X, X_var):
+        # Force re-evaluation of KNN
+        for d in self.m.kern.evaluate_now.keys():
+            self.m.kern.evaluate_now[d] = 0
         missing_rows = np.all(np.isnan(X.values), axis=1)
         mean, var = self.m.predict(X.values)
         # Return the prior for missing rows

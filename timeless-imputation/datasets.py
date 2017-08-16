@@ -71,7 +71,7 @@ def benchmark(impute_methods, datasets, tests_to_perform, do_not_compute=False,
 
     for ((data_name, (full_data, cat_keys)), (ampute_fun, ampute_fun_name),
          proportion, norm_type) in tests_to_perform:
-        for (algo_name, impute_f) in impute_methods.items():
+        for (algo_name, impute_f) in impute_methods:
             amputed_name = '{:s}_{:s}_{:.1f}'.format(
                     data_name, ampute_fun_name, proportion)
             amputed_data = ampute_fun(
