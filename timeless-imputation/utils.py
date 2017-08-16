@@ -157,6 +157,42 @@ def mcar_total(dataset, missing_proportion=0.5):
     return _type_aware_drop(dataset, (np.random.rand(*dataset.shape)
                                       < missing_proportion))
 
+def mar_rows(dataset, rows_missing=0.2, missing_row_loss=0.5, deciding_missing_proportion=0.2):
+    float_keys = list(filter(lambda k: dataset[k].dtype == np.float64,
+                             dataset.keys()))
+    np.random.shuffle(float_keys)
+    deciding_missing = float_keys[:int(deciding_missing_proportion*dataset.shape[1])]
+    coeffs = np.random.rand(len(deciding_missing)) - 0.5
+    coeffs_s = pd.Series(dict(zip(deciding_missing, coeffs)))
+    resulting_values = (dataset * coeffs_s)[float_keys].sum(axis=1)
+
+    # Now infer threshold that has `rows_missing` values smaller:
+    missing_thresh = np.percentile(resulting_values.values, rows_missing*100)
+    example_mask = resulting_values.values <= missing_thresh
+    row_mask = np.random.rand(*dataset.shape) < missing_row_loss
+    mask = example_mask[:, np.newaxis] & row_mask
+    return _type_aware_drop(dataset, mask)
+
+def mnar_rows(dataset, columns_nonrandom=0.3, missing_proportion_random=0.2,
+              missing_proportion_nonrandom=0.0):
+    float_keys = list(filter(lambda k: dataset[k].dtype == np.float64,
+                             dataset.keys()))
+    np.random.shuffle(float_keys)
+    possible_missing = float_keys[:int(columns_nonrandom*dataset.shape[1])]
+    missing_thresh = np.percentile(dataset[possible_missing].values,
+                                   missing_proportion_random*100, axis=0)
+    nonrandom_mask = dataset[possible_missing].values < missing_thresh
+
+    random_mask = np.random.rand(dataset.shape[0], (
+        dataset.shape[1] - len(possible_missing))) < missing_proportion_nonrandom
+
+    impossible_missing = list(k for k in dataset.keys() if k not in possible_missing)
+    _df = pd.concat([pd.DataFrame(nonrandom_mask, columns=possible_missing),
+                     pd.DataFrame(random_mask, columns=impossible_missing)], axis=1)
+    mask_dataset = _df[dataset.keys()]
+    assert mask_dataset.shape == dataset.shape
+    return _type_aware_drop(dataset, mask_dataset.values)
+
 
 def _rescale_dataframes(dataframes, mean, std, rescale_f):
     keys = list(mean.keys())
@@ -302,6 +338,9 @@ def log_likelihood(amputed_df, multiple_imputed_dfs, full_df, var_df=None):
         all_variances = np.var(midf, axis=0, ddof=1)
     else:
         all_variances = var_df[num_keys].values
+    #if np.any(all_variances == 0.0):
+    #   import pdb
+    #   pdb.set_trace()
     all_variances = np.clip(all_variances, np.finfo(np.float64).tiny, np.inf)
 
     ll = 0.

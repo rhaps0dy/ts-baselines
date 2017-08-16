@@ -8,12 +8,13 @@ import knn_kernel
 
 class GPRegression:
     def __init__(self, n_features, mog, complete_X, n_neighbours, knn_type,
-                 ARD=True):
+                 ARD=True, params=None):
         self.ARD = ARD
         self.mog = mog
         self.complete_X = complete_X[~np.all(np.isnan(complete_X), axis=1)]
         self.n_neighbours = n_neighbours
         self.knn_type = knn_type
+        self.params = params
 
     def make_kernel(self, X):
         n_features = X.shape[1]
@@ -81,7 +82,15 @@ class UncertainGPRegression(GPRegression):
             kern = mog_rbf.UncertainGaussianRBFWhite(X.shape[1], None)
             inputs = np.concatenate([X.values, X_var.values], axis=1)
         else:
-            kern = mog_rbf.UncertainMoGRBFWhite(X.shape[1], self.mog)
+            #import mog_rbf_tf
+            if self.params is not None:
+                kern = mog_rbf.UncertainMoGRBFWhite(X.shape[1], self.mog)
+            else:
+                kern = mog_rbf.UncertainMoGRBFWhite(
+                    X.shape[1], self.mog,
+                    white_var=self.params['white_variance'],
+                    rbf_var=self.params['rbf_variance'],
+                    lengthscale=self.params['rbf_lengthscale'])
             inputs = X.values.copy()
             inputs[X_var.values != 0.0] = np.nan
         self.m = self.Model(X=inputs, Y=y.values[:, np.newaxis], kernel=kern)

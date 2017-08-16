@@ -81,7 +81,7 @@ def rbf_uncertain(x, v, M_):
 
 class UncertainMoGRBFWhite(Kern):
     def __init__(self, input_dim, mog, white_var=1., rbf_var=1.,
-                 ARD=False, cutoff=0.99, single_gaussian=False,
+                 lengthscale=1., ARD=False, cutoff=0.99, single_gaussian=False,
                  active_dims=None, name='uncertainMoG'):
         """For this kernel, to save computation, we are going to assume the
         dimension 0 of the inputs bears an ID of the point. Thus, X.shape[1] ==
@@ -99,9 +99,15 @@ class UncertainMoGRBFWhite(Kern):
         self.white_var = Param('white_var', white_var)
         self.rbf_var = Param('rbf_var', rbf_var)
         if ARD:
-            lengthscale = np.ones([input_dim], dtype=np.float64)
+            if lengthscale is None:
+                lengthscale = np.ones([input_dim], dtype=np.float64)
+            else:
+                assert lengthscale.shape == (input_dim,)
         else:
-            lengthscale = 1.
+            if lengthscale is None:
+                lengthscale = 1.
+            else:
+                assert isinstance(lengthscale, float)
         self.lengthscale = Param('lengthscale', lengthscale)
         assert len(self.lengthscale.shape) == 1, \
                 "Lengthscale must be of rank 1"
