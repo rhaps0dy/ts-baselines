@@ -5,3 +5,6 @@ interpolation/
 FILENAMES*
 dataset-old
 interpolation-old
+logs-*
+model-*
+good-models

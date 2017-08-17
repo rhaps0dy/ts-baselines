@@ -3,7 +3,6 @@ import pickle_utils as pu
 import numpy as np
 import itertools as it
 import functools
-import math
 import os
 from tqdm import tqdm
 
@@ -93,10 +92,11 @@ def layer(inputs, num_units, trainable, prior_variance=1.0, nlin=tf.nn.relu,
         ]
         for tensor in log_f_Wb:
             f = tf.check_numerics(tf.expand_dims(tensor, axis=1), "f_W")
+            f = tf.expand_dims(tensor, axis=1)
             tf.add_to_collection('f_W_components', f)
 
         log_Zq = [
-            .5*tf.reduce_sum(tf.log((2*math.pi)*param_v)),
+            .5*tf.reduce_sum(tf.log((2*np.pi)*param_v)),
             tf.reduce_sum(param_m_v*param_m),
         ]
         for z in log_Zq:
@@ -105,22 +105,41 @@ def layer(inputs, num_units, trainable, prior_variance=1.0, nlin=tf.nn.relu,
     return out
 
 @add_variable_scope(name="log_likelihood")
-def make_log_likelihood(preds, labels, n_outputs, log_noise, noise_var):
-    ll = -0.5*(n_outputs*math.log(2*math.pi) +
-               # Ordinarily we would take `log |noise|`, where || is
-               # determinant. Since `noise` is a diagonal matrix, the
-               # determinant is just multiplying its entries. However we have
-               # `log(noise)` instead, which means we can just take the sum of
-               # it all.
-               tf.reduce_sum(log_noise) + tf.reduce_sum(
-                   (labels-preds)**2./noise_var, axis=2))
+def make_log_likelihood(preds, labels, log_noise, noise_var, condition=None,
+                        noise_condition=None):
+    diffs = labels-preds
+    if condition is None:
+        condition = tf.is_nan(diffs)
+    if noise_condition is None:
+        noise_condition = condition
+
+    # TODO: fill log_noise to the shape of diffs if it is not already
+    assert diffs.get_shape()[-1] == log_noise.get_shape()[-1] \
+        and len(diffs.get_shape()) == len(log_noise.get_shape())
+    assert repr(log_noise.get_shape()) == repr(noise_var.get_shape())
+
+    diffs = tf.where(condition, tf.zeros_like(diffs), diffs)
+    dropped_log_noise = tf.where(noise_condition, tf.zeros_like(log_noise), log_noise)
+    mahalanobis_dist = tf.reduce_sum(diffs**2./noise_var, axis=-1)
+    mahalanobis_dist = tf.check_numerics(mahalanobis_dist, "mahalanobis_dist")
+    n_outputs = tf.reduce_sum(tf.to_float(condition), axis=-1)
+    # Marginal likelihood of the existing distances
+    # ---
+    # Ordinarily we would take `log |noise|`, where || is determinant. Since
+    # `noise` is a diagonal matrix, the determinant is just multiplying its
+    # entries. However we have `log(noise)` instead, which means we can just
+    # take the sum of it all.
+    n_outs = n_outputs*np.log(2*np.pi)
+    ll = -0.5*(n_outs + tf.reduce_sum(dropped_log_noise, axis=-1) +
+               mahalanobis_dist)
+    ll = tf.check_numerics(ll, "ll")
     return ll
 
 
 @add_variable_scope(name=None)
 def model(inputs, labels, N, num_samples, layer_sizes, alpha=0.5,
-          trainable=True, mean_X=None, mean_y=None, std_X=None, std_y=None):
-    if not trainable:
+          trainable=True, include_samples=False, mean_X=None, mean_y=None, std_X=None, std_y=None):
+    if mean_X is not None:
         inputs = (inputs - tf.constant(mean_X)) / tf.constant(std_X)
     if labels is None:
         n_outputs = len(mean_y)
@@ -145,19 +164,19 @@ def model(inputs, labels, N, num_samples, layer_sizes, alpha=0.5,
     noise_var = tf.exp(log_noise)
     noise_std = tf.sqrt(noise_var)
     if trainable:
-        log_likelihood = make_log_likelihood(preds, labels, n_outputs,
-                                             log_noise, noise_var)
+        log_likelihood = make_log_likelihood(preds, labels, log_noise, noise_var)
 
         log_f_W = (1/N) * tf.add_n(tf.get_collection('f_W_components'))
         log_Zq = tf.add_n(tf.get_collection('Z_q_components'))
 
         # Eq 12 BB-alpha, 9-11 Depeweg
-        energy = -log_Zq + (N/alpha)*(math.log(num_samples) -
+        energy = -log_Zq + (N/alpha)*(np.log(num_samples) -
             tf.reduce_mean(
                 tf.reduce_logsumexp(
                     alpha*(log_likelihood - log_f_W)
                 , axis=0)
             , axis=0))
+        energy = tf.check_numerics(energy, "energy")
         assert energy.get_shape() == [], "Energy is a scalar"
 
         mean_prediction = tf.reduce_mean(preds, axis=0, name="mean_prediction")
@@ -167,11 +186,16 @@ def model(inputs, labels, N, num_samples, layer_sizes, alpha=0.5,
                                 name="max_prediction")
 
         results['energy'] = energy
+        # TODO: log_likelihood must be summed
         results['log_likelihood'] = tf.reduce_mean(log_likelihood, axis=0)
         results['mean_prediction'] = mean_prediction
         results['min_prediction'] = min_prediction
         results['max_prediction'] = max_prediction
-    else:
+        if mean_X is not None:
+            results['mean_prediction'] = results['mean_prediction']*std_y + mean_y
+            results['min_prediction'] = results['min_prediction']*std_y + mean_y
+            results['max_prediction'] = results['max_prediction']*std_y + mean_y
+    if include_samples:
         noise = tf.random_normal(
             tf.shape(preds), stddev=noise_std, name="noise")
         w_s = tf.reduce_mean(preds+noise, axis=0, name="white_samples")
@@ -185,6 +209,7 @@ def build_sampler(inputs, feature_i, num_samples=8, layer_sizes=[64]):
     mX, sX, my, sy, N = pu.load(
         os.path.join(log_dir, 'means.pkl.gz'))
     m = model(inputs, None, N, num_samples, layer_sizes, trainable=False,
+              include_samples=True,
               mean_X=mX, mean_y=my, std_X=sX, std_y=sy,
               name="num_{:d}".format(feature_i))
     validated_best = pu.load(os.path.join(log_dir, 'validated_best.pkl'))
@@ -233,8 +258,11 @@ def main(_):
         os.mkdir(log_dir)
     ckpt_fname = os.path.join(log_dir, 'ckpt')
 
+    # This input machinery is built using tf.Placeholder instead of tf.Queue
+    # and others.
     inputs, labels, X_train, y_train, X_vali, y_vali, X_test, mean_X_train, \
-        std_X_train, mean_y_train, std_y_train, test_mask = build_input_machinery(dataset)
+        std_X_train, mean_y_train, std_y_train, test_mask \
+        = build_input_machinery(dataset)
 
     pu.dump((mean_X_train, std_X_train, mean_y_train, std_y_train,
              len(X_train)),
@@ -245,6 +273,8 @@ def main(_):
     m = model(inputs, labels, len(X_train), FLAGS.num_samples,
               layer_sizes=eval(FLAGS.layer_sizes),
               name="num_{:d}".format(FLAGS.feature_i))
+
+    # Create training operation, and start training loop
     train_op = (tf.train.AdamOptimizer(learning_rate=FLAGS.learning_rate)
                 .minimize(m['energy'], global_step=global_step))
     saver = tf.train.Saver(max_to_keep=0)
@@ -262,7 +292,10 @@ def main(_):
                 if slice_start > len(X_train):
                     slice_start = 0
 
-                if step%4000 == 0:
+                if step % 4000 == 0:
+                    # Every 4000 steps, compute the training and validation
+                    # log-likelihood, and the training energy, and output them
+                    # to the summary graph.
                     print("Doing step", step)
                     energy, ll, _ = sess.run([m['energy'], m['log_likelihood'], train_op], {
                         inputs: X_train[s], labels: y_train[s]})
@@ -293,9 +326,6 @@ def main(_):
         pY, pY_min, pY_max = sess.run(
             [m['mean_prediction'], m['min_prediction'], m['max_prediction']],
             {inputs: X_test})
-        pY = pY*std_y_train + mean_y_train
-        pY_min = pY_min*std_y_train + mean_y_train
-        pY_max = pY_max*std_y_train + mean_y_train
         pu.dump((pY, pY_min, pY_max), out_file)
         print(pY.shape, pY_min.shape, pY_max.shape)
 

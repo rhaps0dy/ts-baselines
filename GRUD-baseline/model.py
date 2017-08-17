@@ -9,7 +9,7 @@ import pickle_utils as pu
 import os
 
 from tensorflow.python.util import nest
-from bb_alpha_inputs import add_variable_scope, model as bb_alpha_model
+import bb_alpha_inputs as bba
 import fast_smooth_category_counts as fscc
 
 def _make_embedding(_name, n_cats, index, total_counts=None):
@@ -81,7 +81,8 @@ def GRUD(num_units, num_layers, inputs_dict, input_means_dict,
 
     keep_prob = tf.placeholder(shape=[], dtype=tf.float32)
     recurrent_inputs, recurrent_inputs_dt, static_inputs = _embed_categorical(
-        inputs_dict, categorical_headers, number_of_categories, interpolation_dir)
+        inputs_dict, categorical_headers, number_of_categories,
+        interpolation_dir)
 
     inputs, inputs_dt = _tile_static(recurrent_inputs, recurrent_inputs_dt,
                                      static_inputs)
@@ -254,7 +255,7 @@ class BayesDropoutCell(tf.contrib.rnn.LayerNormBasicLSTMCell):
     normalization and recurrent dropout."""
     def __init__(self, num_units, inputs, number_of_categories,
                  categorical_headers, numerical_headers, interpolation_dir,
-                 recurrent_dropout, output_dropout, num_samples):
+                 dataset_dir, recurrent_dropout, output_dropout, num_samples):
         static_inputs_l = [inputs['numerical_static']]
         with tf.variable_scope('static_embeddings'):
             for i, n_cats in enumerate(
@@ -267,6 +268,7 @@ class BayesDropoutCell(tf.contrib.rnn.LayerNormBasicLSTMCell):
         self._categorical_headers = categorical_headers
         self._numerical_headers = numerical_headers
         self._interpolation_dir = interpolation_dir
+        self._dataset_dir = dataset_dir
         self._n_categorical_ts = number_of_categories['categorical_ts']
 
         self._cat_n = len(self._n_categorical_ts)
@@ -284,17 +286,23 @@ class BayesDropoutCell(tf.contrib.rnn.LayerNormBasicLSTMCell):
     def output_size(self):
         return self._gru.output_size
 
-    def _bayes_num(self, name, interpolation_dir, num_i, prev_x, prev_dt):
-        inputs = tf.concat([prev_x, prev_dt], axis=1,
-                           name="concat_{:s}".format(name))
-        mX, sX, my, sy, N = pu.load(os.path.join(
-            interpolation_dir, 'trained', 'num_{:d}'.format(num_i),
-            'means.pkl.gz'))
-        m = bb_alpha_model(inputs, labels=None, N=N,
-              num_samples=self._num_samples, layer_sizes=[64], alpha=0.5,
-              trainable=False, mean_X=mX, mean_y=my, std_X=sX, std_y=sy,
-              name=name)
-        return m['samples']
+    @staticmethod
+    def _num_impute(prev_x, prev_x_dt, dataset_dir, num_samples):
+        whiten = pu.load(os.path.join(dataset_dir, 'whiten_imputation.pkl.gz'))
+        mX = np.concatenate(list(whiten['values'][k] / whiten['counts'][k]
+                                    for k in ['num_forward', 'num_ts']),
+                                axis=0).astype(np.float32)
+        sX = np.concatenate(list(whiten['stddevs'][k] for k in ['num_forward', 'num_ts']),
+                                axis=0).astype(np.float32)
+        my = (whiten['values']['num_labels'] / whiten['counts']['num_labels']).astype(np.float32)
+        sy = whiten['stddevs']['num_labels'].astype(np.float32)
+        inputs = tf.concat([prev_x, prev_dt], axis=1)
+        return bba.model(inputs, labels=None, N=whiten['total_n'],
+                         num_samples=num_samples,
+                         layer_sizes=[128, 64, 64, 128],
+                         alpha=0.5, trainable=False,
+                         mean_X=mX, mean_y=my, std_X=sX, std_y=sy,
+                         name="num_inputs")
 
     def _accumulate_values(prev_dt, prev_1, inputs, inputs_cond):
         input_zeros = tf.zeros_like(inputs, dtype=tf.float32)
@@ -317,15 +325,7 @@ class BayesDropoutCell(tf.contrib.rnn.LayerNormBasicLSTMCell):
                         name, self._n_categorical_ts[i], categorical_ts[:,i],
                         total_counts, self._interpolation_dir, i,
                         prev_c[:,i:i+1], prev_c_dt[:,i:i+1]))
-            with tf.variable_scope("num_inputs"):
-                for i, name in enumerate(self._numerical_headers):
-                    l = self._bayes_num(
-                        name, self._interpolation_dir, i,
-                        prev_x[:,i:i+1], prev_x_dt[:,i:i+1])
-                    num_slice = numerical_ts[:,i]
-                    num_is_nan = tf.isnan(num_slice)
-                    l = tf.where(num_is_nan, l, num_slice)
-                    to_concat.append(l)
+            to_concat.append(self._num_impute(prev_x, prev_x_dt, dataset_dir, self._num_samples))
             to_concat.append(self._static_inputs)
             all_inputs = tf.concat(to_concat, axis=1, name="all_inputs")
 
