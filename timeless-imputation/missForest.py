@@ -45,7 +45,8 @@ class RF_reg(RandomForestRegressor):
 def predict(df, df_var, other_info, dense_df, prev_df, complete_df, train_mask,
             key, cat_dummies, classifier, regressor,
             use_previous_prediction=False, optimize=True, n_neighbours=None,
-            knn_type=None, model_fname=None, gp_params=None, **kwargs):
+            knn_type=None, model_fname=None, gp_params=None,
+            use_informed_prior=False, **kwargs):
     #if not use_previous_prediction:
     #    del prev_df  # To prevent bugs
 
@@ -76,7 +77,12 @@ def predict(df, df_var, other_info, dense_df, prev_df, complete_df, train_mask,
             pdb.set_trace()
         X_var = df_var.drop(key, axis=1)
         key_first = key_last = list(df.keys()).index(key)
-        y = df[key]
+        if use_informed_prior:
+            amputed_val_mean = complete_df.loc[df[key].isnull(), key].mean()
+            print('THE MEAN OF THE ERASED VALUES IS:', amputed_val_mean)
+            y = df[key] - amputed_val_mean
+        else:
+            y = df[key]
         method = regressor
 
     if other_info is not None:
@@ -272,6 +278,9 @@ def impute(log_path, dataset, full_data, sequential=True,
         updates = []
         for key in masks_usable.keys():
             mask = masks_usable[key]
+            if np.all(mask):
+                print("SKIPING KEY", key)
+                continue
             if load_gp_model is not None:
                 fp = os.path.join(load_gp_model(log_path),
                                   ("model_{:s}_iter_{:d}.pkl.gz"

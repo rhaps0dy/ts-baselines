@@ -187,6 +187,19 @@ def tf_points_statistics(inputs, GMM, M, parallel_iterations=50):
                      back_prop=True,
                      name="points_stats")
 
+@add_variable_scope(name="tf_var_points_statistics")
+def tf_var_points_statistics(inputs, variances, M, parallel_iterations=50):
+    n_dims = int(inputs.get_shape()[1])
+    all_nan = tf.constant([np.nan]*n_dims, dtype=inputs.dtype, shape=[n_dims])
+    return tf.map_fn(lambda t: tf.uncertain_point(all_nan, dict(
+        weights=tf.ones([1], dtype=inputs.dtype),
+        means=tf.expand_dims(t[0], 0),
+        covariances=tf.expand_dims(tf.diag(t[1]), 0)), M),
+                     [inputs, variances], dtype=[inputs.dtype]*8,
+                     parallel_iterations=parallel_iterations,
+                     back_prop=True,
+                     name="variance_points_stats")
+
 
 @add_variable_scope()
 def k_f(b, B_2, x_norm, x_sum_contrib, v_mu_sig_mu, v_sig_mu, v_mu_obs, Cinv,
@@ -324,6 +337,7 @@ class TFUncertainMoGRBFWhite(Kern):
                  name='tfUncertainMoG', **_kwargs):
         super(TFUncertainMoGRBFWhite, self).__init__(input_dim, active_dims,
                                                      name)
+        assert input_dim == mog['means'].shape[1]
         self.input_dim = input_dim
         tf.reset_default_graph()
         symm, a_symm, assignments = make_kernel_fun(input_dim, mog)
@@ -360,7 +374,7 @@ class TFUncertainMoGRBFWhite(Kern):
         return (self.rbf_var + self.white_var) * np.ones(len(X))
 
     @Cache_this(limit=3, ignore_args=())
-    def K(self, X, X2=None, stride=70):
+    def K(self, X, X2=None, stride=20):
         max_index_i = len(X)
         max_index_j = max_index_i if X2 is None else len(X2)
         _X2 = X if X2 is None else X2
@@ -370,7 +384,7 @@ class TFUncertainMoGRBFWhite(Kern):
         for i in range(0, max_index_i, stride):
             min_index_j = (i if X2 is None else 0)
             for j in range(min_index_j, max_index_j, stride):
-                print("doing", i, j)
+                print("Doing", i, j)
                 if i == j and X2 is None:
                     kernel[i:i+stride, i:i+stride] = self.sess.run(
                         self.K_symm, {self.X_ph: X[i:i+stride, :]})
@@ -383,7 +397,8 @@ class TFUncertainMoGRBFWhite(Kern):
                         kernel[j:j+stride, i:i+stride] = out.T
         return kernel
 
-    def update_gradients_full(self, dL_dK, X, X2, stride=50):
+    def update_gradients_full(self, dL_dK, X, X2, stride=10):
+        return
         max_index_i = len(X)
         max_index_j = max_index_i if X2 is None else len(X2)
         _X2 = X if X2 is None else X2

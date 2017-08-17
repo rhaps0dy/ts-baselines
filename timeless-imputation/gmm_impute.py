@@ -60,6 +60,8 @@ def mask_matrix(matrix, m1, m2):
 
 
 def conditional_mog(m, inp, mask, cutoff=1.0):
+    """Calculate the MoG of the unobserved dimensions of point `inp` based on
+    the MoG model `m`"""
     if np.all(mask):
         return {'means': m['means'],
                 'covariances': m['covariances'],

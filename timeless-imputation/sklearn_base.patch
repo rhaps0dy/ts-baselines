@@ -1,0 +1,4 @@
+54c54
+<     X = check_array(X, dtype=[np.float64, np.float32])
+---
+>     X = check_array(X, dtype=[np.float64, np.float32], force_finite=False)

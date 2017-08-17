@@ -5,6 +5,7 @@ import missForest
 import numpy as np
 import missForest_GP
 import os
+import pickle_utils as pu
 
 _ds = datasets.datasets()
 
@@ -25,12 +26,7 @@ for b in dsets:
     def do_mnar_rows(dataset_, proportion):
         return utils.mnar_rows(dataset_, proportion**.5, proportion**.5,
                                missing_proportion_nonrandom=0.0)
-    def do_mnar_r_rows(dataset_, proportion):
-        return utils.mnar_rows(dataset_, proportion**.5, proportion**.5 * 1.4,
-                               proportion**.5 / 1.4,
-                               missing_proportion_nonrandom=0.0)
     for c in [(datasets.memoize(do_mnar_rows), 'MNAR_rows'),
-              (datasets.memoize(do_mnar_r_rows), 'MNAR_R_rows'),
               (datasets.memoize(do_mar_rows), 'MAR_rows')]:
         # [(datasets.memoize(utils.mcar_total), 'MCAR_total'),
         #  (datasets.memoize(do_mcar_rows), 'MCAR_rows')]:
@@ -71,6 +67,8 @@ for i in range(1):
             initial_impute=mbm.mf_initial_impute)),
         ('mean', lambda log, d, full_data: missForest.impute(
             log, d, full_data, max_iterations=0)),
-    ], dsets, tests_to_perform, do_not_compute=False, path=iter_path)
+    ], dsets, tests_to_perform, do_not_compute=True, path=iter_path)
 
     print(baseline)
+    pu.dump(baseline, "impute_benchmark/results.pkl.gz")
+

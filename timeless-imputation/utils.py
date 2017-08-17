@@ -193,6 +193,29 @@ def mnar_rows(dataset, columns_nonrandom=0.3, missing_proportion_random=0.2,
     assert mask_dataset.shape == dataset.shape
     return _type_aware_drop(dataset, mask_dataset.values)
 
+def mnar_random_rows(dataset, columns_nonrandom=0.3, missing_proportion_columns=0.2,
+                     missing_proportion_random=0.7,
+                     missing_proportion_nonrandom=0.0):
+    float_keys = list(filter(lambda k: dataset[k].dtype == np.float64,
+                             dataset.keys()))
+    np.random.shuffle(float_keys)
+    possible_missing = float_keys[:int(columns_nonrandom*dataset.shape[1])]
+    missing_thresh = np.percentile(dataset[possible_missing].values,
+                                   missing_proportion_columns*100, axis=0)
+    nonrandom_mask = dataset[possible_missing].values < missing_thresh
+    nonrandom_mask &= np.random.rand(
+        dataset.shape[0], len(possible_missing)) < missing_proportion_random
+
+    random_mask = np.random.rand(dataset.shape[0], (
+        dataset.shape[1] - len(possible_missing))) < missing_proportion_nonrandom
+
+    impossible_missing = list(k for k in dataset.keys() if k not in possible_missing)
+    _df = pd.concat([pd.DataFrame(nonrandom_mask, columns=possible_missing),
+                     pd.DataFrame(random_mask, columns=impossible_missing)], axis=1)
+    mask_dataset = _df[dataset.keys()]
+    assert mask_dataset.shape == dataset.shape
+    return _type_aware_drop(dataset, mask_dataset.values)
+
 
 def _rescale_dataframes(dataframes, mean, std, rescale_f):
     keys = list(mean.keys())
