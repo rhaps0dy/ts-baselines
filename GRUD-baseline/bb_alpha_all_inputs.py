@@ -61,13 +61,16 @@ def main(_):
                                     FLAGS.min_after_dequeue,
                                     FLAGS.n_queue_threads)
 
+    # Data used to normalise the inptus, created by
+    # `../clean_ventilation/whiten_imputation.py`
     whiten = pu.load(os.path.join(dataset_dir, 'whiten_imputation.pkl.gz'))
     means_X = np.concatenate(list(whiten['values'][k] / whiten['counts'][k]
                                   for k in ['num_forward', 'num_ts']),
                              axis=0).astype(np.float32)
     stddevs_X = np.concatenate(list(whiten['stddevs'][k] for k in ['num_forward', 'num_ts']),
                                axis=0).astype(np.float32)
-    means_y = (whiten['values']['num_labels'] / whiten['counts']['num_labels']).astype(np.float32)
+    means_y = (whiten['values']['num_labels']
+               / whiten['counts']['num_labels']).astype(np.float32)
     stddevs_y = whiten['stddevs']['num_labels'].astype(np.float32)
 
     def build_model(inputs_dict, reuse=None):
@@ -99,6 +102,7 @@ def main(_):
         log_likelihood_ph = {}
         actual_batch_size = {}
         _summaries = []
+        # Build the operations used to compute metrics
         with tf.variable_scope('metrics'):
             for name, mdl, inputs_dict in [('training', m, training), ('validation', v_m, validation)]:
                 distances = tf.reduce_sum(tf.squared_difference(
@@ -124,6 +128,8 @@ def main(_):
         training_summary = tf.summary.scalar('training/loss', loss_ph)
 
     if FLAGS.command == 'train':
+        # The Supervisor automatically saves the model to disk every 600
+        # seconds, starts the input queues, and other things.
         sv = tf.train.Supervisor(is_chief=True,
                                 logdir=FLAGS.log_dir,
                                 summary_op=None,
@@ -174,7 +180,10 @@ def main(_):
                             break
                         _mse, _ll, _bs = sess.run([mse[name], log_likelihood[name],
                                                    actual_batch_size[name]])
-                        assert _bs == FLAGS.batch_size, "YOU MUST ACCOUNT FOR DIFFERENT-SIZED BATCHES IN MEANS"
+                        if _bs != FLAGS.batch_size:
+                            raise NotImplementedError("Code assumes all "
+                                                      "mini-batches are the "
+                                                      "same size")
                         mse_values[name] += _mse/n_steps
                         log_likelihood_values[name] += _ll
                 except tf.errors.OutOfRangeError:

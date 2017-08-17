@@ -258,8 +258,11 @@ def main(_):
         os.mkdir(log_dir)
     ckpt_fname = os.path.join(log_dir, 'ckpt')
 
+    # This input machinery is built using tf.Placeholder instead of tf.Queue
+    # and others.
     inputs, labels, X_train, y_train, X_vali, y_vali, X_test, mean_X_train, \
-        std_X_train, mean_y_train, std_y_train, test_mask = build_input_machinery(dataset)
+        std_X_train, mean_y_train, std_y_train, test_mask \
+        = build_input_machinery(dataset)
 
     pu.dump((mean_X_train, std_X_train, mean_y_train, std_y_train,
              len(X_train)),
@@ -270,6 +273,8 @@ def main(_):
     m = model(inputs, labels, len(X_train), FLAGS.num_samples,
               layer_sizes=eval(FLAGS.layer_sizes),
               name="num_{:d}".format(FLAGS.feature_i))
+
+    # Create training operation, and start training loop
     train_op = (tf.train.AdamOptimizer(learning_rate=FLAGS.learning_rate)
                 .minimize(m['energy'], global_step=global_step))
     saver = tf.train.Saver(max_to_keep=0)
@@ -287,7 +292,10 @@ def main(_):
                 if slice_start > len(X_train):
                     slice_start = 0
 
-                if step%4000 == 0:
+                if step % 4000 == 0:
+                    # Every 4000 steps, compute the training and validation
+                    # log-likelihood, and the training energy, and output them
+                    # to the summary graph.
                     print("Doing step", step)
                     energy, ll, _ = sess.run([m['energy'], m['log_likelihood'], train_op], {
                         inputs: X_train[s], labels: y_train[s]})
