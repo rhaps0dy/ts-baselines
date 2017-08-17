@@ -1,1 +1,1 @@
-../ts-baselines/GRUD-baseline/bb_alpha_inputs.py
+../GRUD-baseline/bb_alpha_inputs.py
