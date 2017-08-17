@@ -36,7 +36,19 @@ repository, called `qixuan-project`.
   - Implementations of several kernels for Gaussian Process regression and
     classification that are aware of missing values, for use
     with [SheffieldML's GPy library](http://gpy.readthedocs.io/en/deploy/).
-  
+	
+## Files:
+  - `smooth_category_counts.ipynb`: Smoothing the counts of a categorical value
+    at a time step for every series, across different time steps. The
+    smoothing kernel centered at $t'$ is of form $e^-\alpha |(t - t')|$, and
+    $\alpha$ is optimized to offer maximum likelihood of the data.
+  - `fast_smooth_category_counts.ipynb`: same but faster.
+  - `feature_extraction.py`: attempt at extracting features from time series
+    using [tsfresh](https://github.com/blue-yonder/tsfresh) to use feature
+    selection algorithms on the resulting static data set.
+  - `Plot GMM cluster weights and max(2, 2y) function.ipynb`: What are the
+    learned cluster weights, and how does that function look? These questions
+    explored here.
 
 # Instructions for doing time-series classification
 
@@ -47,8 +59,7 @@ There are two things required: TFRecord files with the data, and .pkl.gz files
 that tell you how to interpret it. These should be put in a
 folder, that will be passed as the `--dataset` flag.
 
-* Other notes about the models on GRUD-baseline
-
- * I split the training, test and validation sets randomly. Thus, sometimes it
-   happens that a feature can have several categories, but it has none in the
-   training set.
+* Other notes about the models on GRUD-baseline:
+  * I split the training, test and validation sets randomly. Thus, sometimes it
+    happens that a feature can have several categories, but it has none in the
+    training set.
