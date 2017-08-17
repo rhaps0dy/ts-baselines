@@ -49,6 +49,11 @@ repository, called `qixuan-project`.
   - `Plot GMM cluster weights and max(2, 2y) function.ipynb`: What are the
     learned cluster weights, and how does that function look? These questions
     explored here.
+  - `baseline.py`: compute a classification baseline for the MIMIC time series
+    ventilation-outcome task. It uses only static features of each patient,
+    including some natural language features found in the "diagnosis" written by
+    the person at the emergency room entrance desk.
+  
 
 # Instructions for doing time-series classification
 
